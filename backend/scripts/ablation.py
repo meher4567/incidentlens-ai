@@ -11,6 +11,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -28,6 +29,12 @@ from backend.app.services.root_cause import (
 )
 
 settings = get_settings()
+
+
+class AblationScoreResult(TypedDict):
+    service_id: uuid.UUID
+    score: float
+    rank: int
 
 
 def match_incidents_to_truth(session: Session) -> dict[uuid.UUID, IncidentTruth]:
@@ -99,10 +106,10 @@ def score_with_features(
     incident: Incident,
     model: LogisticRegression,
     feature_subset: list[str],
-) -> list[dict]:
+) -> list[AblationScoreResult]:
     """Score incident using subset of features."""
     G = _build_dep_graph(session)
-    results = []
+    results: list[AblationScoreResult] = []
     for service_id in incident.affected_services:
         features = extract_features(session, incident, service_id, G)
         feature_vector = [features[name] for name in feature_subset]
@@ -111,7 +118,7 @@ def score_with_features(
             score = float(proba[1]) if len(proba) > 1 else float(proba[0])
         except Exception:
             score = 0.0
-        results.append({"service_id": service_id, "score": score})
+        results.append({"service_id": service_id, "score": score, "rank": 0})
     results.sort(key=lambda x: x["score"], reverse=True)
     for i, r in enumerate(results):
         r["rank"] = i + 1
@@ -123,7 +130,7 @@ def evaluate_with_model(
     held_out_incidents: list[tuple[Incident, IncidentTruth]],
     model: LogisticRegression,
     feature_subset: list[str],
-) -> dict:
+) -> dict[str, float]:
     """Evaluate top-1/top-3 accuracy."""
     top1_correct = 0
     top3_correct = 0
@@ -138,11 +145,11 @@ def evaluate_with_model(
     return {
         "top1_accuracy": round(top1_correct / n, 4) if n > 0 else 0,
         "top3_accuracy": round(top3_correct / n, 4) if n > 0 else 0,
-        "n_incidents": n,
+        "n_incidents": float(n),
     }
 
 
-def generate_findings_report(results: dict, output_path: str) -> None:
+def generate_findings_report(results: dict[str, dict[str, float]], output_path: str) -> None:
     """Generate docs/ablation_findings.md."""
     lines = [
         "# RCA Feature Ablation Study",
@@ -195,7 +202,7 @@ def generate_findings_report(results: dict, output_path: str) -> None:
     lines.append("")
 
     # Find most important feature (largest drop when removed)
-    deltas = {}
+    deltas: dict[str, float] = {}
     for feature_name in FEATURE_NAMES:
         ablation = results.get(feature_name, {})
         deltas[feature_name] = bl_top1 - ablation.get("top1_accuracy", 0)
@@ -290,7 +297,7 @@ def generate_findings_report(results: dict, output_path: str) -> None:
     print(f"Ablation findings written to {output_path}")
 
 
-def run_ablation():
+def run_ablation() -> None:
     """Run full feature ablation study."""
     session = SyncSessionLocal()
     try:
@@ -327,7 +334,7 @@ def run_ablation():
         print(f"Training incidents: {len(training_incidents)}")
         print(f"Held-out incidents: {len(held_out_pairs)}\n")
 
-        results = {}
+        results: dict[str, dict[str, float]] = {}
 
         # Baseline: all features
         print("[1/7] Baseline (all features)...")
@@ -367,7 +374,7 @@ def run_ablation():
         session.close()
 
 
-def main():
+def main() -> None:
     run_ablation()
 
 

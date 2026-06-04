@@ -1,4 +1,6 @@
 import uuid
+from datetime import datetime
+from typing import TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -18,6 +20,18 @@ from backend.app.schemas.incidents import (
 router = APIRouter()
 
 
+class IncidentAlertPayload(TypedDict):
+    id: uuid.UUID
+    service_id: uuid.UUID
+    service_name: str
+    anomaly_type: str
+    start_window: datetime
+    end_window: datetime
+    severity: str
+    observed_value: float
+    baseline_value: float
+
+
 @router.get("", response_model=list[IncidentResponse])
 async def list_incidents(
     severity: str | None = Query(None),
@@ -34,8 +48,8 @@ async def list_incidents(
     incidents = session.execute(stmt).scalars().all()
 
     # Enrich with service names and alert counts
-    result = []
-    service_name_map = {}
+    result: list[IncidentResponse] = []
+    service_name_map: dict[uuid.UUID, str] = {}
     for inc in incidents:
         # Resolve service names
         for sid in inc.affected_services:
@@ -87,8 +101,8 @@ async def get_incident(
     )
     alert_ids = [a.alert_id for a in alert_links]
 
-    alerts = []
-    service_name_map = {}
+    alerts: list[IncidentAlertPayload] = []
+    service_name_map: dict[uuid.UUID, str] = {}
     if alert_ids:
         alerts_objs = session.execute(select(Alert).where(Alert.id.in_(alert_ids))).scalars().all()
         for a in alerts_objs:
@@ -105,9 +119,9 @@ async def get_incident(
                     "anomaly_type": a.anomaly_type,
                     "start_window": a.start_window,
                     "end_window": a.end_window,
-                    "severity": a.severity,
-                    "observed_value": a.observed_value,
-                    "baseline_value": a.baseline_value,
+                    "severity": str(a.severity),
+                    "observed_value": float(a.observed_value),
+                    "baseline_value": float(a.baseline_value),
                 }
             )
 
@@ -141,15 +155,15 @@ async def get_incident(
         )
 
     # Build timeline: sort alerts by start_window, note upstream/downstream
-    timeline = []
-    for a in sorted(alerts, key=lambda x: x["start_window"]):
+    timeline: list[TimelineEvent] = []
+    for alert_data in sorted(alerts, key=lambda x: x["start_window"]):
         timeline.append(
             TimelineEvent(
-                alert_id=a["id"],
-                service_name=a["service_name"],
-                anomaly_type=a["anomaly_type"],
-                start_window=a["start_window"],
-                severity=a["severity"],
+                alert_id=alert_data["id"],
+                service_name=alert_data["service_name"],
+                anomaly_type=alert_data["anomaly_type"],
+                start_window=alert_data["start_window"],
+                severity=alert_data["severity"],
             )
         )
 
@@ -165,7 +179,7 @@ async def get_incident(
         alert_count=len(alerts),
         closed_at=incident.closed_at,
         created_at=incident.created_at,
-        alerts=alerts,
+        alerts=[dict(alert) for alert in alerts],
         root_cause_scores=root_cause_scores,
         timeline=timeline,
     )

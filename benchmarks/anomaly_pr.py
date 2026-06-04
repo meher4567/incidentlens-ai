@@ -18,6 +18,11 @@ from backend.app.models.metrics import MetricWindow
 from backend.app.models.truth import IncidentTruth
 from benchmarks.ingestion_throughput import save_results
 
+DETECTOR_KEYS = {
+    AnomalyDetector.MAD: "mad",
+    AnomalyDetector.ISOLATION_FOREST: "isolation_forest",
+}
+
 
 def run_benchmark() -> dict:
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -44,13 +49,14 @@ def run_benchmark() -> dict:
         results = {}
 
         for detector in [AnomalyDetector.MAD, AnomalyDetector.ISOLATION_FOREST]:
+            detector_key = DETECTOR_KEYS[detector]
             # Get anomalies with scores
             anomalies = (
                 session.execute(select(Anomaly).where(Anomaly.detector == detector)).scalars().all()
             )
 
             if not anomalies:
-                results[detector.value] = {
+                results[detector_key] = {
                     "precision": 0,
                     "recall": 0,
                     "f1": 0,
@@ -91,7 +97,7 @@ def run_benchmark() -> dict:
             recall = tp / (tp + fn) if (tp + fn) > 0 else 0
             f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
 
-            results[detector.value] = {
+            results[detector_key] = {
                 "precision": round(precision, 4),
                 "recall": round(recall, 4),
                 "f1": round(f1, 4),
@@ -108,6 +114,7 @@ def run_benchmark() -> dict:
         # Save data for frontend PR curve rendering
         pr_data = {"mad": [], "isolation_forest": []}
         for detector in [AnomalyDetector.MAD, AnomalyDetector.ISOLATION_FOREST]:
+            detector_key = DETECTOR_KEYS[detector]
             detector_anomalies = (
                 session.execute(
                     select(Anomaly)
@@ -146,7 +153,7 @@ def run_benchmark() -> dict:
                     r = tp_th / (tp_th + fn_th) if (tp_th + fn_th) > 0 else 0.0
                     points.append({"precision": round(p, 4), "recall": round(r, 4)})
 
-                pr_data[detector.value] = points
+                pr_data[detector_key] = points
 
         metrics = {
             "benchmark": "anomaly_pr",

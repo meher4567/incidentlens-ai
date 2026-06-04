@@ -48,7 +48,7 @@ def detect_mad(
     Run MAD detection on a single metric window.
     Returns list of anomaly dicts ready for insertion.
     """
-    anomalies = []
+    anomalies: list[dict] = []
     mw = metric_window
 
     # Define metrics to check: (metric_name, observed_value, baseline_median, baseline_mad, positive_only)
@@ -162,7 +162,7 @@ def detect_isolation_forest(
     Uses per-service IF model. Returns list of anomaly dicts.
     """
 
-    anomalies = []
+    anomalies: list[dict] = []
     mw = metric_window
 
     if_model = if_models.get(mw.service_id)

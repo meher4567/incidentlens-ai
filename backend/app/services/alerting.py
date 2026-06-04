@@ -9,7 +9,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.app.models.alerts import Alert
+from backend.app.models.alerts import Alert, IncidentSeverity
 from backend.app.models.anomalies import Anomaly
 
 DEBOUNCE_MINUTES = 5
@@ -36,21 +36,16 @@ def process_new_anomalies(session: Session) -> int:
     """
     # Find anomalies not yet referenced by any alert
     # Get all anomaly IDs already assigned to alerts
-    exising_alert_rows = session.execute(select(Alert.anomaly_ids)).scalars().all()
+    existing_alert_rows = session.execute(select(Alert.anomaly_ids)).scalars().all()
     assigned_anomaly_ids: set[int] = set()
-    for ids in exising_alert_rows:
+    for ids in existing_alert_rows:
         if ids:
             assigned_anomaly_ids.update(ids)
 
-    anomaly_rows = (
-        session.execute(
-            select(Anomaly).where(
-                ~Anomaly.id.in_(assigned_anomaly_ids) if assigned_anomaly_ids else True
-            )
-        )
-        .scalars()
-        .all()
-    )
+    anomaly_stmt = select(Anomaly)
+    if assigned_anomaly_ids:
+        anomaly_stmt = anomaly_stmt.where(~Anomaly.id.in_(assigned_anomaly_ids))
+    anomaly_rows = session.execute(anomaly_stmt).scalars().all()
 
     if not anomaly_rows:
         return 0
@@ -87,7 +82,7 @@ def process_new_anomalies(session: Session) -> int:
             existing_sev_idx = severities.index(str(existing.severity).upper())
             new_sev_idx = severities.index(str(anomaly.severity).upper())
             if new_sev_idx > existing_sev_idx:
-                existing.severity = anomaly.severity
+                existing.severity = IncidentSeverity(str(anomaly.severity).upper())
             # Append anomaly_id
             if anomaly.id not in existing.anomaly_ids:
                 existing.anomaly_ids = existing.anomaly_ids + [anomaly.id]
@@ -98,7 +93,7 @@ def process_new_anomalies(session: Session) -> int:
                 anomaly_type=anomaly_type,
                 start_window=anomaly.window_start,
                 end_window=anomaly.window_start + timedelta(seconds=anomaly.window_size_seconds),
-                severity=anomaly.severity.upper(),
+                severity=IncidentSeverity(str(anomaly.severity).upper()),
                 observed_value=anomaly.observed_value,
                 baseline_value=anomaly.baseline_value,
                 anomaly_ids=[anomaly.id],

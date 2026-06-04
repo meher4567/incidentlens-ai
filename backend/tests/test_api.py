@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from backend.app.api import router
 from backend.app.db.session import get_sync_session
 from backend.app.models.alerts import Alert
+from backend.app.models.logs import RawLog
 
 
 @pytest.fixture
@@ -52,6 +53,30 @@ def test_empty_log_batch_is_rejected(api_client):
     response = api_client.post("/api/logs/batch", json={"events": []})
 
     assert response.status_code == 422
+
+
+def test_log_batch_persists_metadata(api_client, db_session):
+    response = api_client.post(
+        "/api/logs/batch",
+        json={
+            "events": [
+                {
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "service": "api-gateway",
+                    "level": "INFO",
+                    "message": "request completed",
+                    "latency_ms": 42,
+                    "status_code": 200,
+                    "host": "api-gateway-pod-1",
+                    "region": "us-west-2",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 201
+    log = db_session.query(RawLog).one()
+    assert log.extra_data == {"host": "api-gateway-pod-1", "region": "us-west-2"}
 
 
 def test_pr_curves_use_dashboard_response_keys(api_client):

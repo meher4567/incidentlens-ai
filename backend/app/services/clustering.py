@@ -31,13 +31,11 @@ def _get_canonical_alerts(session: Session) -> list[Alert]:
     dup_ids = session.execute(select(DeduplicatedAlert.duplicate_alert_id)).scalars().all()
     dup_set = set(dup_ids)
 
-    stmt = (
-        select(Alert)
-        .where(~Alert.id.in_(dup_set) if dup_set else True)
-        .order_by(Alert.start_window.asc())
-    )
+    stmt = select(Alert).order_by(Alert.start_window.asc())
+    if dup_set:
+        stmt = stmt.where(~Alert.id.in_(dup_set))
 
-    return session.execute(stmt).scalars().all()
+    return list(session.execute(stmt).scalars().all())
 
 
 def _build_dep_graph(session: Session) -> nx.DiGraph:
@@ -81,7 +79,7 @@ def cluster_alerts(session: Session) -> int:
     canonical_alerts = _get_canonical_alerts(session)
 
     # Get existing open incidents
-    open_incidents = (
+    open_incidents = list(
         session.execute(select(Incident).where(Incident.closed_at.is_(None))).scalars().all()
     )
 
@@ -104,7 +102,7 @@ def cluster_alerts(session: Session) -> int:
 
         # Find candidate open incidents
         proximity_window = timedelta(minutes=PROXIMITY_MINUTES)
-        candidates = []
+        candidates: list[Incident] = []
         for inc in open_incidents:
             # Time proximity check
             latest_alert_time = inc.start_time
@@ -135,7 +133,7 @@ def cluster_alerts(session: Session) -> int:
                     _merge_incidents(session, oldest, other)
             _attach_alert_to_incident(session, oldest, alert)
             # Refresh open incidents after merge
-            open_incidents = (
+            open_incidents = list(
                 session.execute(select(Incident).where(Incident.closed_at.is_(None)))
                 .scalars()
                 .all()
@@ -144,7 +142,7 @@ def cluster_alerts(session: Session) -> int:
             # Create new incident
             inc = Incident(
                 start_time=alert.start_window,
-                severity=alert.severity,
+                severity=str(alert.severity),
                 affected_services=[alert.service_id],
             )
             session.add(inc)
@@ -203,9 +201,10 @@ def _attach_alert_to_incident(
     # Update severity to max
     severities = ["MEDIUM", "HIGH", "CRITICAL"]
     inc_sev_idx = severities.index(incident.severity) if incident.severity in severities else 0
-    alert_sev_idx = severities.index(alert.severity) if alert.severity in severities else 0
+    alert_severity = str(alert.severity)
+    alert_sev_idx = severities.index(alert_severity) if alert_severity in severities else 0
     if alert_sev_idx > inc_sev_idx:
-        incident.severity = alert.severity
+        incident.severity = alert_severity
 
     # Extend end_time
     if incident.end_time is None or alert.end_window > incident.end_time:

@@ -15,6 +15,7 @@ import pickle
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from sqlalchemy import select
@@ -161,7 +162,7 @@ def train_and_save_model(session: Session) -> dict:
 
 def evaluate_held_out(
     session: Session,
-) -> dict:
+) -> dict[str, Any]:
     """
     Evaluate RCA ranker on held-out incidents.
     Returns top-1, top-3 accuracy and per-type breakdown.
@@ -196,7 +197,7 @@ def evaluate_held_out(
     # Score each incident
     top1_correct = 0
     top3_correct = 0
-    per_type: dict[str, dict] = {}
+    per_type: dict[str, dict[str, int]] = {}
 
     for inc, truth in held_out_incidents:
         results = score_incident(session, inc, model)
@@ -241,17 +242,18 @@ def evaluate_held_out(
     session.commit()
 
     n = len(held_out_incidents)
-    result = {
+    per_type_result: dict[str, dict[str, float | int]] = {}
+    result: dict[str, Any] = {
         "n_held_out": n,
         "top1_accuracy": round(top1_correct / n, 4) if n > 0 else 0,
         "top3_accuracy": round(top3_correct / n, 4) if n > 0 else 0,
-        "per_type": {},
+        "per_type": per_type_result,
         "generalization_gap": None,
     }
 
     for ttype in per_type:
         pt = per_type[ttype]
-        result["per_type"][ttype] = {
+        per_type_result[ttype] = {
             "top1": round(pt["correct_top1"] / pt["total"], 4) if pt["total"] > 0 else 0,
             "top3": round(pt["correct_top3"] / pt["total"], 4) if pt["total"] > 0 else 0,
             "total": pt["total"],
@@ -262,7 +264,7 @@ def evaluate_held_out(
     # We can't compute training-type accuracy here (they were used for training)
     # But we note the generalization gap as the drop from 1.0 (perfect on training)
     # to measured held-out accuracy
-    result["generalization_gap"] = round(1.0 - result["top1_accuracy"], 4)
+    result["generalization_gap"] = round(1.0 - float(result["top1_accuracy"]), 4)
 
     # Bootstrap 95% CI
     rng = np.random.default_rng(settings.seed)

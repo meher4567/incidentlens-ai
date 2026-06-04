@@ -8,6 +8,7 @@ late-arriving logs via UPSERT idempotency.
 Uses event time for window assignment. Ingestion time stored separately.
 """
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -261,7 +262,7 @@ def _compute_baselines(
         }
 
     def _median_mad(
-        values: list[float], floor: float = 0.0
+        values: Sequence[float | int | None], floor: float = 0.0
     ) -> tuple[Optional[float], Optional[float]]:
         arr = np.array([v for v in values if v is not None], dtype=float)
         if len(arr) == 0:

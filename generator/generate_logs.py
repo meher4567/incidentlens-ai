@@ -21,7 +21,10 @@ import yaml
 
 def load_config(config_path: Path) -> dict:
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected mapping config in {config_path}")
+    return data
 
 
 def floor_dt(dt: datetime, seconds: int) -> datetime:
@@ -100,7 +103,7 @@ class LogGenerator:
 
     def _apply_incident_perturbation(
         self, event: dict, incident_type: str, is_root: bool, is_affected: bool
-    ) -> dict:
+    ) -> dict | None:
         """Mutate log events during an incident window."""
         e = dict(event)
         if incident_type == "payment_latency_spike":
@@ -213,11 +216,17 @@ class LogGenerator:
                         for e in events
                         if self._is_affected(e["service"], root_cause, inc["type"])
                     )
-                    events = [
-                        self._apply_incident_perturbation(e, inc["type"], is_root, is_affected)
-                        for e in events
-                    ]
-                    events = [e for e in events if e is not None]
+                    perturbed_events: list[dict] = []
+                    for event in events:
+                        perturbed = self._apply_incident_perturbation(
+                            event,
+                            inc["type"],
+                            is_root,
+                            is_affected,
+                        )
+                        if perturbed is not None:
+                            perturbed_events.append(perturbed)
+                    events = perturbed_events
                     break
 
             log_events.extend(events)

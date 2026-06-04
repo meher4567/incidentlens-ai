@@ -19,7 +19,7 @@ import pickle
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypedDict
 
 import networkx as nx
 import numpy as np
@@ -44,6 +44,14 @@ FEATURE_NAMES = [
     "metric_jump_magnitude",
     "alert_count",
 ]
+
+
+class RootCauseScoreResult(TypedDict):
+    service_id: uuid.UUID
+    score: float
+    rank: int
+    feature_vector: dict[str, float]
+    feature_contributions: dict[str, float]
 
 
 def _build_dep_graph(session: Session) -> nx.DiGraph:
@@ -228,13 +236,13 @@ def score_incident(
     session: Session,
     incident: Incident,
     model: LogisticRegression,
-) -> list[dict]:
+) -> list[RootCauseScoreResult]:
     """
     Score all affected services in an incident using the trained RCA ranker.
     Returns list of dicts with score, rank, feature_vector, feature_contributions.
     """
     G = _build_dep_graph(session)
-    results = []
+    results: list[RootCauseScoreResult] = []
 
     for service_id in incident.affected_services:
         features = extract_features(session, incident, service_id, G)
@@ -248,7 +256,7 @@ def score_incident(
             score = 0.0
 
         # Feature contributions = coefficient * feature_value
-        contributions = {}
+        contributions: dict[str, float] = {}
         if hasattr(model, "coef_"):
             for i, name in enumerate(FEATURE_NAMES):
                 contributions[name] = round(float(model.coef_[0][i]) * feature_vector[i], 6)
@@ -257,6 +265,7 @@ def score_incident(
             {
                 "service_id": service_id,
                 "score": score,
+                "rank": 0,
                 "feature_vector": dict(zip(FEATURE_NAMES, feature_vector)),
                 "feature_contributions": contributions,
             }
@@ -283,7 +292,10 @@ def run_rca_on_closed_incidents(session: Session) -> int:
 
     # Handle both raw model and dict-with-metadata formats
     if isinstance(model_data, dict):
-        model = model_data.get("model", model_data)
+        maybe_model = model_data.get("model")
+        if not isinstance(maybe_model, LogisticRegression):
+            return 0
+        model = maybe_model
     else:
         model = model_data
 
@@ -291,18 +303,12 @@ def run_rca_on_closed_incidents(session: Session) -> int:
     scored_ids = (
         session.execute(select(IncidentRootCauseScore.incident_id).distinct()).scalars().all()
     )
-    scored_set = set(scored_ids)
+    scored_set: set[uuid.UUID] = set(scored_ids)
 
-    closed_incidents = (
-        session.execute(
-            select(Incident).where(
-                Incident.closed_at.isnot(None),
-                ~Incident.id.in_(scored_set) if scored_set else True,
-            )
-        )
-        .scalars()
-        .all()
-    )
+    closed_stmt = select(Incident).where(Incident.closed_at.isnot(None))
+    if scored_set:
+        closed_stmt = closed_stmt.where(~Incident.id.in_(scored_set))
+    closed_incidents = session.execute(closed_stmt).scalars().all()
 
     scored_count = 0
     for inc in closed_incidents:

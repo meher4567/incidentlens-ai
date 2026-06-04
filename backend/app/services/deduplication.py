@@ -8,6 +8,7 @@ Two rules:
 Stores dedupe relationships in deduplicated_alerts table.
 Original alerts preserved; dedupe metadata is a side table.
 """
+import uuid
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -54,8 +55,8 @@ def find_duplicates(
     # Rule 2: Different services + shared trace_id + overlapping ±2min windows
     if new_alert.anomaly_ids:
         # Find trace_ids from underlying logs
-        trace_ids = set()
-        for anomaly_id in new_alert.anomaly_ids:
+        trace_ids: set[uuid.UUID] = set()
+        for _anomaly_id in new_alert.anomaly_ids:
             # Get logs for this anomaly's time window via anomaly->metric_window relationship
             # Simplified: find all trace_ids in logs around the alert's time window
             logs = (
@@ -72,7 +73,7 @@ def find_duplicates(
                 .scalars()
                 .all()
             )
-            trace_ids.update(logs)
+            trace_ids.update(trace_id for trace_id in logs if trace_id is not None)
 
         if trace_ids:
             trace_padding = timedelta(minutes=SHARED_TRACE_WINDOW_MIN)
@@ -118,7 +119,7 @@ def deduplicate_alerts(session: Session) -> int:
     Returns number of deduplication relationships created.
     """
     # Find alerts not yet appearing as either canonical or duplicate
-    processed_ids = set()
+    processed_ids: set[uuid.UUID] = set()
     processed_ids.update(
         session.execute(select(DeduplicatedAlert.canonical_alert_id)).scalars().all()
     )
@@ -127,15 +128,10 @@ def deduplicate_alerts(session: Session) -> int:
     )
 
     # Get all alerts not yet processed, ordered by start_window (oldest first)
-    all_alerts = (
-        session.execute(
-            select(Alert)
-            .where(~Alert.id.in_(processed_ids) if processed_ids else True)
-            .order_by(Alert.start_window.asc())
-        )
-        .scalars()
-        .all()
-    )
+    alert_stmt = select(Alert).order_by(Alert.start_window.asc())
+    if processed_ids:
+        alert_stmt = alert_stmt.where(~Alert.id.in_(processed_ids))
+    all_alerts = session.execute(alert_stmt).scalars().all()
 
     dedup_count = 0
 

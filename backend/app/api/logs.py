@@ -35,7 +35,7 @@ def _log_entry_to_model(entry: LogEntry, service_id: uuid.UUID) -> RawLog:
         trace_id=entry.trace_id,
         latency_ms=entry.latency_ms,
         status_code=entry.status_code,
-        metadata={
+        extra_data={
             "host": entry.host,
             "region": entry.region,
         }
@@ -58,7 +58,7 @@ async def ingest_batch(
 
     # Pre-fetch service name->id mapping for efficiency
     service_names = {e.service for e in batch.events}
-    existing_services = {}
+    existing_services: dict[str, uuid.UUID] = {}
     for name in service_names:
         svc = session.execute(select(Service.id).where(Service.name == name)).scalar_one_or_none()
         if svc is not None:
@@ -70,10 +70,10 @@ async def ingest_batch(
             service_id = existing_services.get(entry.service)
             if service_id is None:
                 # Auto-create unknown services
-                svc = Service(name=entry.service)
-                session.add(svc)
+                created_service = Service(name=entry.service)
+                session.add(created_service)
                 session.flush()
-                service_id = svc.id
+                service_id = created_service.id
                 existing_services[entry.service] = service_id
 
             rows_to_insert.append(_log_entry_to_model(entry, service_id))
