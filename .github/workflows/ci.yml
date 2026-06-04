@@ -112,9 +112,6 @@ jobs:
           DATABASE_URL: postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
         run: |
           python -m alembic upgrade head
-          python -m backend.scripts.seed --skip-truth
-          python -m generator.generate_logs --events 1000 --output /tmp/logs.jsonl --truth /tmp/truth.jsonl
-          python -m backend.scripts.import_logs --input /tmp/logs.jsonl --direct-db
           cd backend && python -m pytest tests/test_integration.py -v --timeout=120
 
   benchmark-smoke:
