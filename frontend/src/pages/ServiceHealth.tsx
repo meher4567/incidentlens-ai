@@ -8,9 +8,8 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from "recharts";
-import { servicesApi } from "../api/client";
+import { servicesApi, type MetricWindow, type ServiceSummary } from "../api/client";
 
 export default function ServiceHealth() {
   const { data: services } = useQuery({
@@ -34,7 +33,7 @@ export default function ServiceHealth() {
   const serviceList = Array.isArray(services) ? services : [];
   const windows = health?.windows ?? [];
 
-  const chartData = windows.map((w: any) => ({
+  const chartData = windows.map((w: MetricWindow) => ({
     time: new Date(w.window_start).toLocaleTimeString(),
     request_count: w.request_count,
     error_rate: w.error_rate ? Number(w.error_rate) * 100 : 0,
@@ -63,7 +62,7 @@ export default function ServiceHealth() {
               }}
             >
               <option value="">Select a service</option>
-              {serviceList.map((svc: any) => (
+              {serviceList.map((svc: ServiceSummary) => (
                 <option key={svc.id} value={svc.id}>
                   {svc.name}
                 </option>

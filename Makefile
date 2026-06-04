@@ -1,5 +1,5 @@
 .PHONY: help build up down generate detect test lint clean train-if seed seed-prod migrate \
-        benchmark quick-demo
+        benchmark quick-demo demo
 
 help:
 	@echo "IncidentLens AI - Makefile Commands"
@@ -67,19 +67,24 @@ clean:
 	rm -f logs.jsonl incidents_truth.jsonl
 
 quick-demo:
-	@echo "=== Quick 1K Event Demo ==="
-	python -m generator.generate_logs --events 1000 --output logs.jsonl --truth incidents_truth.jsonl
+	@echo "=== Quick 5K Event Demo ==="
+	$(MAKE) migrate
+	python -m generator.generate_logs --events 5000 --output logs.jsonl --truth incidents_truth.jsonl
 	python -m backend.scripts.seed --truth incidents_truth.jsonl
 	python -m backend.scripts.import_logs --input logs.jsonl --direct-db
 	python -m backend.scripts.train_isolation_forest
 	python -m backend.scripts.run_pipeline --full
+	python -m backend.scripts.train_rca
 	@echo "Demo complete! Open http://localhost:5173"
 
-demo: up seed generate detect
+demo: up
 	@echo "Starting demo..."
 	@echo "Waiting for services to be healthy..."
-	@sleep 10
+	python -c "import time; time.sleep(10)"
+	$(MAKE) migrate
 	$(MAKE) seed
 	$(MAKE) generate
+	$(MAKE) train-if
 	$(MAKE) detect
+	python -m backend.scripts.train_rca
 	@echo "Demo ready! Open http://localhost:5173"

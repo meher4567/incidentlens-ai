@@ -1,9 +1,13 @@
 # IncidentLens AI
 
+[![CI](https://github.com/meher4567/incidentlens-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/meher4567/incidentlens-ai/actions/workflows/ci.yml)
+
 IncidentLens AI is an end-to-end observability and incident-analysis system for
 microservice logs. It ingests service events, builds rolling health metrics,
 detects anomalies, deduplicates noisy alerts, clusters related alerts into
 incidents, and ranks likely root causes with an interpretable model.
+
+![IncidentLens dashboard overview](docs/assets/dashboard-overview.png)
 
 ## Highlights
 
@@ -15,6 +19,15 @@ incidents, and ranks likely root causes with an interpretable model.
 - Logistic-regression RCA ranker with persisted feature contributions.
 - React dashboard for overview metrics, service health, incidents, and PR curves.
 - Reproducible quality gates for backend tests, frontend tests, build, lint, and audit.
+
+## What This Demonstrates
+
+- A full incident pipeline, not just a dashboard mock.
+- Clear service boundaries across API, workers, database, frontend, and generator.
+- ML-backed anomaly detection with a benchmarkable comparator.
+- Noise reduction before incident creation through debounce and deduplication.
+- Explainable RCA scoring that stores feature-level evidence for each candidate.
+- CI-backed quality gates for backend, frontend, integration, and benchmark smoke checks.
 
 ## Architecture
 
@@ -61,10 +74,7 @@ api-gateway
 git clone https://github.com/meher4567/incidentlens-ai.git
 cd incidentlens-ai
 
-docker compose up -d
-make seed
-make generate
-make detect
+make demo
 ```
 
 Open the dashboard at `http://localhost:5173`.
@@ -74,6 +84,16 @@ For a smaller local demo:
 ```bash
 make quick-demo
 ```
+
+For a frontend-only preview with deterministic sample data:
+
+```bash
+cd frontend
+VITE_DEMO_MODE=true npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+Use the demo mode for UI review only. Use `make demo` for the real ingestion,
+detection, incident, and RCA pipeline.
 
 ## Quality Gates
 
@@ -118,6 +138,15 @@ Benchmark reports are intentionally generated artifacts and are not committed by
 default. See [docs/benchmark_results.md](docs/benchmark_results.md) for the
 methodology and acceptance targets.
 
+## Deployment Readiness
+
+- Docker Compose defines the API, frontend, PostgreSQL, Redis, workers, and scheduler.
+- `/healthz` and `/api/health` expose API health checks.
+- GitHub Actions runs lint, type-check, frontend build/test/audit, backend tests,
+  integration tests, and benchmark smoke checks.
+- See [docs/deployment.md](docs/deployment.md) for the runbook, environment
+  variables, health checks, and release gate.
+
 ## Project Layout
 
 ```text
@@ -134,6 +163,9 @@ alembic/      Database migrations
 
 - [Architecture](docs/architecture.md)
 - [Anomaly Methods](docs/anomaly_methods.md)
+- [Demo Guide](docs/demo.md)
+- [Incident Walkthrough](docs/incident_walkthrough.md)
+- [Deployment Readiness](docs/deployment.md)
 - [RCA Ablation Notes](docs/ablation_findings.md)
 - [Benchmark Methodology](docs/benchmark_results.md)
 - [Generator Specification](generator/README.md)

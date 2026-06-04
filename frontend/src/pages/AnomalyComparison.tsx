@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   LineChart,
   Line,
@@ -9,62 +10,18 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-
-interface PRPoint {
-  precision: number;
-  recall: number;
-}
-
-interface PRData {
-  mad: PRPoint[];
-  isolation_forest: PRPoint[];
-  summary?: {
-    mad?: { precision: number; recall: number; f1: number };
-    isolation_forest?: { precision: number; recall: number; f1: number };
-  };
-}
+import { metricsApi, type PRCurveResponse } from "../api/client";
 
 export default function AnomalyComparison() {
-  const [prData, setPrData] = useState<PRData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: prData,
+    isLoading,
+    error,
+  } = useQuery<PRCurveResponse>({
+    queryKey: ["prCurves"],
+    queryFn: metricsApi.prCurves,
+  });
 
-  useEffect(() => {
-    async function fetchPrData() {
-      try {
-        setLoading(true);
-        setError(null);
-        // Try to load from benchmark results API
-        const baseUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
-        const resp = await fetch(`${baseUrl}/api/metrics/pr-curves`);
-        if (resp.ok) {
-          const data = await resp.json();
-          setPrData(data);
-        } else {
-          // Fallback: try to fetch from static benchmark result
-          const today = new Date().toISOString().slice(0, 10);
-          const staticResp = await fetch(`/benchmarks/results/${today}/anomaly_pr.json`);
-          if (staticResp.ok) {
-            const staticData = await staticResp.json();
-            setPrData({
-              mad: staticData.pr_curve_data?.mad || [],
-              isolation_forest: staticData.pr_curve_data?.isolation_forest || [],
-              summary: staticData.results,
-            });
-          } else {
-            setError("No benchmark data available. Run 'make benchmark' to generate PR curves.");
-          }
-        }
-      } catch {
-        setError("No benchmark data available. Run 'make benchmark' to generate PR curves.");
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchPrData();
-  }, []);
-
-  // Transform data for Recharts (merge MAD and IF points by recall)
   const chartData: Array<{
     recall: number;
     mad_precision?: number;
@@ -73,17 +30,19 @@ export default function AnomalyComparison() {
 
   if (prData) {
     const allRecalls = new Set<number>();
-    prData.mad.forEach((p) => allRecalls.add(p.recall));
-    prData.isolation_forest.forEach((p) => allRecalls.add(p.recall));
+    prData.mad.forEach((point) => allRecalls.add(point.recall));
+    prData.isolation_forest.forEach((point) => allRecalls.add(point.recall));
     const sortedRecalls = Array.from(allRecalls).sort((a, b) => a - b);
 
-    sortedRecalls.forEach((r) => {
-      const madPt = prData.mad.find((p) => Math.abs(p.recall - r) < 0.001);
-      const ifPt = prData.isolation_forest.find((p) => Math.abs(p.recall - r) < 0.001);
+    sortedRecalls.forEach((recall) => {
+      const madPoint = prData.mad.find((point) => Math.abs(point.recall - recall) < 0.001);
+      const isolationPoint = prData.isolation_forest.find(
+        (point) => Math.abs(point.recall - recall) < 0.001,
+      );
       chartData.push({
-        recall: r,
-        mad_precision: madPt?.precision,
-        if_precision: ifPt?.precision,
+        recall,
+        mad_precision: madPoint?.precision,
+        if_precision: isolationPoint?.precision,
       });
     });
   }
@@ -94,11 +53,13 @@ export default function AnomalyComparison() {
         Anomaly Methods Comparison
       </h2>
 
-      {loading && <div className="loading">Loading benchmark data...</div>}
+      {isLoading && <div className="loading">Loading benchmark data...</div>}
 
-      {error && !loading && (
+      {error && !isLoading && (
         <div className="card" style={{ marginBottom: 24 }}>
-          <p style={{ color: "var(--color-text-muted)" }}>{error}</p>
+          <p style={{ color: "var(--color-text-muted)" }}>
+            No benchmark data available. Run make benchmark to generate PR curves.
+          </p>
         </div>
       )}
 
@@ -107,7 +68,7 @@ export default function AnomalyComparison() {
           <div className="card stat-tile">
             <span className="stat-label">MAD F1 Score</span>
             <span className="stat-value">
-              {prData.summary.mad?.f1 != null ? prData.summary.mad.f1.toFixed(3) : "\u2014"}
+              {prData.summary.mad?.f1 != null ? prData.summary.mad.f1.toFixed(3) : "-"}
             </span>
           </div>
           <div className="card stat-tile">
@@ -115,13 +76,11 @@ export default function AnomalyComparison() {
             <span className="stat-value">
               {prData.summary.isolation_forest?.f1 != null
                 ? prData.summary.isolation_forest.f1.toFixed(3)
-                : "\u2014"}
+                : "-"}
             </span>
           </div>
           <div className="card stat-tile">
-            <span className="stat-label">
-              MAD Precision / Recall
-            </span>
+            <span className="stat-label">MAD Precision / Recall</span>
             <span className="stat-value" style={{ fontSize: "1rem" }}>
               {prData.summary.mad ? (
                 <>
@@ -129,7 +88,7 @@ export default function AnomalyComparison() {
                   {prData.summary.mad.recall.toFixed(3)}
                 </>
               ) : (
-                "\u2014"
+                "-"
               )}
             </span>
           </div>
@@ -140,7 +99,7 @@ export default function AnomalyComparison() {
         <div className="card">
           <h3 className="card-title">Precision-Recall Curves</h3>
           <div style={{ marginBottom: 8, fontSize: "0.75rem", color: "var(--color-text-muted)" }}>
-            Comparing MAD robust z-score vs Isolation Forest on held-out incidents
+            MAD robust z-score compared with Isolation Forest on held-out incidents
           </div>
           <ResponsiveContainer width="100%" height={400}>
             <LineChart data={chartData}>
@@ -156,7 +115,7 @@ export default function AnomalyComparison() {
                   style: { fill: "var(--color-text-muted)", fontSize: 12 },
                 }}
                 domain={[0, 1]}
-                tickFormatter={(v) => v.toFixed(1)}
+                tickFormatter={(value) => value.toFixed(1)}
               />
               <YAxis
                 stroke="var(--color-text-muted)"
@@ -168,7 +127,7 @@ export default function AnomalyComparison() {
                   style: { fill: "var(--color-text-muted)", fontSize: 12 },
                 }}
                 domain={[0, 1]}
-                tickFormatter={(v) => v.toFixed(1)}
+                tickFormatter={(value) => value.toFixed(1)}
               />
               <Tooltip
                 contentStyle={{
@@ -201,9 +160,9 @@ export default function AnomalyComparison() {
         </div>
       )}
 
-      {!loading && !error && chartData.length === 0 && (
+      {!isLoading && !error && chartData.length === 0 && (
         <div className="empty-state">
-          Run <code>make benchmark</code> to generate PR curve data, then refresh.
+          Run make benchmark to generate PR curve data, then refresh.
         </div>
       )}
     </div>

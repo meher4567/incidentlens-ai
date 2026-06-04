@@ -1,9 +1,10 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import { Routes, Route, Link, useLocation } from "react-router-dom";
 import Overview from "./pages/Overview";
-import ServiceHealth from "./pages/ServiceHealth";
-import IncidentDetail from "./pages/IncidentDetail";
-import AnomalyComparison from "./pages/AnomalyComparison";
+
+const ServiceHealth = lazy(() => import("./pages/ServiceHealth"));
+const IncidentDetail = lazy(() => import("./pages/IncidentDetail"));
+const AnomalyComparison = lazy(() => import("./pages/AnomalyComparison"));
 
 const NAV_ITEMS = [
   { path: "/", label: "Overview" },
@@ -20,23 +21,49 @@ export default function App() {
       <header className="app-header">
         <h1 className="app-title">IncidentLens AI</h1>
         <nav className="app-nav">
-          {NAV_ITEMS.map((item) => (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={`nav-link ${location.pathname === item.path ? "nav-link--active" : ""}`}
-            >
-              {item.label}
-            </Link>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const isActive =
+              item.path === "/" ? location.pathname === "/" : location.pathname.startsWith(item.path);
+
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                className={`nav-link ${isActive ? "nav-link--active" : ""}`}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
       </header>
       <main className="app-main">
         <Routes>
           <Route path="/" element={<Overview />} />
-          <Route path="/services" element={<ServiceHealth />} />
-          <Route path="/incidents/:incidentId?" element={<IncidentDetail />} />
-          <Route path="/anomalies" element={<AnomalyComparison />} />
+          <Route
+            path="/services"
+            element={
+              <Suspense fallback={<div className="loading">Loading service health...</div>}>
+                <ServiceHealth />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/incidents/:incidentId?"
+            element={
+              <Suspense fallback={<div className="loading">Loading incidents...</div>}>
+                <IncidentDetail />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/anomalies"
+            element={
+              <Suspense fallback={<div className="loading">Loading anomaly comparison...</div>}>
+                <AnomalyComparison />
+              </Suspense>
+            }
+          />
         </Routes>
       </main>
     </div>
