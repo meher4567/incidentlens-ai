@@ -1,0 +1,161 @@
+name: IncidentLens AI CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  lint-and-type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install ruff==0.2.1 mypy==1.8.0 -r backend/requirements.txt
+      - name: Ruff check
+        run: ruff check backend/ worker/ generator/ benchmarks/
+      - name: Mypy type check
+        run: mypy backend/ --ignore-missing-imports
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Frontend tests
+        working-directory: frontend
+        run: npm test
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
+      - name: Frontend audit
+        working-directory: frontend
+        run: npm audit --audit-level=moderate
+
+  backend-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: incidentlens
+          POSTGRES_PASSWORD: incidentlens
+          POSTGRES_DB: incidentlens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run backend tests
+        env:
+          DATABASE_URL: postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
+        run: |
+          cd backend && python -m pytest tests/ -v --cov=app --cov-report=term --cov-report=xml
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: backend-tests
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: incidentlens
+          POSTGRES_PASSWORD: incidentlens
+          POSTGRES_DB: incidentlens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pytest-timeout
+
+      - name: Run integration test
+        env:
+          DATABASE_URL: postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
+        run: |
+          python -m backend.scripts.seed --skip-truth
+          python -m generator.generate_logs --events 1000 --output /tmp/logs.jsonl --truth /tmp/truth.jsonl
+          python -m backend.scripts.import_logs --input /tmp/logs.jsonl --direct-db
+          cd backend && python -m pytest tests/test_integration.py -v --timeout=120
+
+  benchmark-smoke:
+    runs-on: ubuntu-latest
+    needs: integration-test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: incidentlens
+          POSTGRES_PASSWORD: incidentlens
+          POSTGRES_DB: incidentlens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run benchmark smoke tests
+        env:
+          DATABASE_URL: postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
+        run: |
+          python -m generator.generate_logs --events 5000 --output /tmp/logs.jsonl --truth /tmp/truth.jsonl
+          python -m backend.scripts.seed --truth /tmp/truth.jsonl
+          python -m backend.scripts.import_logs --input /tmp/logs.jsonl --direct-db
+          python -m backend.scripts.train_isolation_forest
+          python -m backend.scripts.run_pipeline --full
+          python -m backend.scripts.train_rca
+          python -m benchmarks.anomaly_pr
+          python -m benchmarks.dedup_compression
+          python -m benchmarks.detection_rate
+          python -m benchmarks.rca_accuracy

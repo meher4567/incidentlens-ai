@@ -1,0 +1,29 @@
+[project]
+name = "incidentlens-ai"
+version = "0.1.0"
+description = "ML-powered observability platform for log ingestion, anomaly detection, incident clustering, and root-cause ranking"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+extend-ignore = ["E741", "E501"]
+exclude = ["backend/tests/conftest.py"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend", "worker", "generator"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_ignores = false
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+addopts = "-v --tb=short"

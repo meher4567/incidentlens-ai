@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+*.so
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+pgdata/
+
+# Environment
+.env
+
+# Data files
+*.jsonl
+*.log
+celerybeat-schedule
+
+# Models
+models/*.pkl
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+*.cover
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MyPy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# Benchmarks
+benchmarks/results/
+
+# Local planning notes
+BUILD_PLAN.md
+PROJECT_BLUEPRINT.md
+TECHNICAL_DESIGN.md
+
+# IDE / Editor
+*.code-workspace

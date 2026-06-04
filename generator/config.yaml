@@ -1,0 +1,88 @@
+# IncidentLens AI - Synthetic Log Generator Configuration
+# Reproducible with seed=42 by default.
+
+seed: 42
+
+services:
+  - name: api-gateway
+    req_per_min: 200
+    p95_latency_ms: 150
+    error_rate: 0.005
+    log_levels: [INFO, WARN, ERROR]
+
+  - name: auth-service
+    req_per_min: 180
+    p95_latency_ms: 80
+    error_rate: 0.003
+    log_levels: [INFO, WARN, ERROR]
+
+  - name: checkout-service
+    req_per_min: 150
+    p95_latency_ms: 250
+    error_rate: 0.008
+    log_levels: [INFO, WARN, ERROR]
+
+  - name: payment-service
+    req_per_min: 140
+    p95_latency_ms: 100
+    error_rate: 0.007
+    log_levels: [INFO, WARN, ERROR]
+
+  - name: inventory-service
+    req_per_min: 130
+    p95_latency_ms: 60
+    error_rate: 0.004
+    log_levels: [INFO, WARN, ERROR]
+
+  - name: notification-service
+    req_per_min: 80
+    p95_latency_ms: 120
+    error_rate: 0.006
+    log_levels: [INFO, WARN, ERROR]
+
+dependencies:
+  - upstream: api-gateway
+    downstream: auth-service
+  - upstream: api-gateway
+    downstream: checkout-service
+  - upstream: checkout-service
+    downstream: payment-service
+  - upstream: checkout-service
+    downstream: inventory-service
+
+  - upstream: checkout-service
+    downstream: notification-service
+
+# notification-service is held-out only (introduced at eval time)
+# RCA ranker trained on 5 services must generalize to 6
+
+incidents:
+  training:
+    - type: payment_latency_spike
+      root_cause: payment-service
+      count: 20
+      start_offset_seconds: 3600
+      duration_seconds: 600
+    - type: auth_error_spike
+      root_cause: auth-service
+      count: 20
+      start_offset_seconds: 5400
+      duration_seconds: 600
+    - type: inventory_traffic_drop
+      root_cause: inventory-service
+      count: 20
+      start_offset_seconds: 7200
+      duration_seconds: 600
+  held_out:
+    - type: db_timeout_cascade
+      root_cause: payment-service
+      count: 20
+      start_offset_seconds: 9000
+      duration_seconds: 300
+    - type: notification_silent_fail
+      root_cause: notification-service
+      count: 20
+      start_offset_seconds: 10800
+      duration_seconds: 600
+
+total_events: 100000

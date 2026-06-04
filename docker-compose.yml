@@ -1,0 +1,112 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: incidentlens
+      POSTGRES_PASSWORD: incidentlens
+      POSTGRES_DB: incidentlens
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U incidentlens"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://incidentlens:incidentlens@db:5432/incidentlens
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  worker_aggregate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A worker.celery_app worker -Q aggregate -l info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql://incidentlens:incidentlens@db:5432/incidentlens
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  worker_detect:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A worker.celery_app worker -Q detect -l info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql://incidentlens:incidentlens@db:5432/incidentlens
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: celery -A worker.celery_app beat -l info
+    environment:
+      DATABASE_URL: postgresql://incidentlens:incidentlens@db:5432/incidentlens
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    depends_on:
+      - api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  pgdata:
