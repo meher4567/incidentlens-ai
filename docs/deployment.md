@@ -17,14 +17,33 @@ platform, or managed app host.
 | `worker_detect` | Detection, alerting, clustering, RCA | Celery worker process healthy |
 | `celery_beat` | Scheduled pipeline triggers | Celery Beat process healthy |
 
+Docker Compose defines health checks for PostgreSQL, Redis, the API, and the
+frontend so dependent services wait for readiness instead of only container
+startup.
+
 ## Required Environment
 
 | Variable | Used By | Example |
 |---|---|---|
+| `APP_NAME` | API | `IncidentLens AI` |
+| `APP_VERSION` | API | `0.1.0` |
 | `DATABASE_URL` | API, workers, scripts | `postgresql://incidentlens:incidentlens@db:5432/incidentlens` |
+| `DATABASE_URL_ASYNC` | API async DB clients | Optional; derived from `DATABASE_URL` when unset |
 | `REDIS_URL` | API, workers | `redis://redis:6379/0` |
+| `CORS_ALLOWED_ORIGINS` | API | `http://localhost:5173,http://127.0.0.1:5173` |
+| `POSTGRES_PORT` | Docker Compose host port | `5432` |
+| `REDIS_PORT` | Docker Compose host port | `6379` |
+| `API_PORT` | Docker Compose host port | `8000` |
+| `FRONTEND_PORT` | Docker Compose host port | `5173` |
 | `VITE_API_URL` | Frontend | `http://localhost:8000` |
 | `VITE_DEMO_MODE` | Frontend demo preview only | `true` |
+
+The backend accepts comma-separated `CORS_ALLOWED_ORIGINS`. For Docker and most
+local runs, setting only `DATABASE_URL` is enough because the async SQLAlchemy
+URL is derived with the `postgresql+asyncpg` driver.
+
+If default host ports are already in use, override the Compose port variables in
+`.env` before running `docker compose up -d`.
 
 ## Release Gate
 
@@ -37,6 +56,7 @@ python -m mypy backend --ignore-missing-imports
 
 cd frontend
 npm test
+npm run lint
 npm run build
 npm audit --audit-level=moderate
 ```

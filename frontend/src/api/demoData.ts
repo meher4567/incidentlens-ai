@@ -1,4 +1,5 @@
 import type {
+  IncidentBriefing,
   IncidentDetail,
   IncidentSummary,
   OverviewMetrics,
@@ -162,6 +163,65 @@ export function demoIncidentDetail(incidentId: string): IncidentDetail {
         severity: "high",
       },
     ],
+  };
+}
+
+export function demoIncidentBriefing(incidentId: string): IncidentBriefing {
+  const incident = demoIncidentDetail(incidentId);
+  const root = incident.root_cause_scores[0];
+  const affected = incident.affected_service_names;
+  const summary = `${incident.severity} incident affecting ${affected.length} service(s); ${root.service_name} is the top RCA candidate with high confidence.`;
+  const evidence = [
+    `Earliest alert: ${incident.timeline[0].service_name} ${incident.timeline[0].anomaly_type} at ${incident.timeline[0].start_window}.`,
+    "RCA feature evidence emphasized: metric jump, earliest signal, blast radius.",
+    `${incident.alert_count} alert(s) were clustered into this incident.`,
+  ];
+  const recommendedActions = [
+    `Check ${root.service_name} deploys, saturation, and dependency errors first.`,
+    "Inspect earliest correlated traces and logs around the first alert window.",
+    "Validate downstream recovery after payment-service is mitigated.",
+  ];
+
+  return {
+    incident_id: incident.id,
+    title: `${incident.severity} incident on ${root.service_name}`,
+    status: incident.closed_at ? "closed" : "active",
+    severity: incident.severity,
+    summary,
+    suspected_root_cause: {
+      service_name: root.service_name,
+      score: root.score,
+      confidence: "high",
+      why: "Top contributing signals: metric jump, earliest signal, blast radius.",
+    },
+    impact: {
+      affected_services: affected,
+      alert_count: incident.alert_count,
+      duration_minutes: null,
+      status: incident.closed_at ? "closed" : "active",
+    },
+    evidence,
+    recommended_actions: recommendedActions,
+    markdown: [
+      "# Incident Briefing",
+      "",
+      `**Incident:** \`${incident.id}\``,
+      `**Severity:** ${incident.severity}`,
+      `**Status:** ${incident.closed_at ? "closed" : "active"}`,
+      `**Affected services:** ${affected.join(", ")}`,
+      "",
+      "## Summary",
+      summary,
+      "",
+      "## Suspected Root Cause",
+      `${root.service_name} (high confidence). Top contributing signals: metric jump, earliest signal, blast radius.`,
+      "",
+      "## Evidence",
+      ...evidence.map((item) => `- ${item}`),
+      "",
+      "## Recommended Actions",
+      ...recommendedActions.map((item) => `- ${item}`),
+    ].join("\n"),
   };
 }
 

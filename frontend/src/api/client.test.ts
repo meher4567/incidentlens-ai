@@ -40,4 +40,43 @@ describe("api client", () => {
 
     await expect(incidentsApi.get("missing")).rejects.toThrow("Incident not found");
   });
+
+  it("fetches operator incident briefings", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        incident_id: "incident-1",
+        title: "Critical incident on payment-service",
+        status: "active",
+        severity: "critical",
+        summary: "payment-service is the top RCA candidate",
+        suspected_root_cause: {
+          service_name: "payment-service",
+          score: 0.87,
+          confidence: "high",
+          why: "Top contributing signals: metric jump.",
+        },
+        impact: {
+          affected_services: ["payment-service"],
+          alert_count: 1,
+          duration_minutes: null,
+          status: "active",
+        },
+        evidence: ["Earliest alert: payment-service latency_spike"],
+        recommended_actions: ["Check payment-service deploys"],
+        markdown: "# Incident Briefing",
+      }),
+    );
+
+    const result = await incidentsApi.briefing("incident-1");
+
+    expect(result.suspected_root_cause.service_name).toBe("payment-service");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/api/incidents/incident-1/briefing",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
+    );
+  });
 });

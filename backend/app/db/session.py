@@ -7,7 +7,7 @@ from backend.app.core.config import get_settings
 settings = get_settings()
 
 SYNC_DATABASE_URL = settings.database_url
-ASYNC_DATABASE_URL = settings.database_url_async
+ASYNC_DATABASE_URL = settings.async_database_url
 
 sync_engine = create_engine(
     SYNC_DATABASE_URL,

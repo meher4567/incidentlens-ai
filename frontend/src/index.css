@@ -189,6 +189,92 @@ body {
   color: var(--color-text);
 }
 
+.button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid rgba(20, 184, 166, 0.45);
+  border-radius: var(--radius);
+  background: rgba(20, 184, 166, 0.1);
+  color: var(--color-primary);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: rgba(20, 184, 166, 0.16);
+}
+
+.incident-briefing {
+  border-color: rgba(20, 184, 166, 0.35);
+}
+
+.briefing-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.briefing-summary {
+  max-width: 980px;
+  margin-bottom: 16px;
+  color: var(--color-text);
+  font-size: 0.95rem;
+}
+
+.briefing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.briefing-panel {
+  min-height: 132px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface-raised);
+}
+
+.briefing-panel strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--color-text);
+  font-size: 1.25rem;
+}
+
+.briefing-panel small,
+.briefing-panel p {
+  display: block;
+  margin-top: 8px;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.section-title {
+  margin-bottom: 8px;
+  color: var(--color-text);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.briefing-list {
+  margin-left: 18px;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.briefing-list li {
+  margin-bottom: 8px;
+}
+
+.briefing-list--ordered {
+  color: var(--color-text);
+}
+
 /* Grid */
 .grid {
   display: grid;
@@ -208,6 +294,9 @@ body {
     grid-template-columns: 1fr;
   }
   .signal-grid {
+    grid-template-columns: 1fr;
+  }
+  .briefing-grid {
     grid-template-columns: 1fr;
   }
   .page-heading {
@@ -279,6 +368,21 @@ body {
   border-radius: var(--radius);
   margin: 16px 0;
   background: rgba(239, 68, 68, 0.05);
+}
+
+.markdown-fallback {
+  display: block;
+  width: 100%;
+  min-height: 180px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
 }
 
 /* Tables */

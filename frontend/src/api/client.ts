@@ -1,5 +1,6 @@
 import {
   demoIncidentDetail,
+  demoIncidentBriefing,
   demoIncidents,
   demoOverviewMetrics,
   demoPrCurves,
@@ -106,6 +107,33 @@ export interface IncidentDetail extends IncidentSummary {
   timeline: TimelineEvent[];
 }
 
+export interface IncidentImpact {
+  affected_services: string[];
+  alert_count: number;
+  duration_minutes: number | null;
+  status: string;
+}
+
+export interface SuspectedRootCause {
+  service_name: string | null;
+  score: number | null;
+  confidence: string;
+  why: string;
+}
+
+export interface IncidentBriefing {
+  incident_id: string;
+  title: string;
+  status: string;
+  severity: string;
+  summary: string;
+  suspected_root_cause: SuspectedRootCause;
+  impact: IncidentImpact;
+  evidence: string[];
+  recommended_actions: string[];
+  markdown: string;
+}
+
 export interface PRPoint {
   precision: number;
   recall: number;
@@ -199,4 +227,8 @@ export const incidentsApi = {
     USE_DEMO_DATA
       ? Promise.resolve(demoIncidentDetail(incidentId))
       : apiFetch<IncidentDetail>(`/api/incidents/${incidentId}`),
+  briefing: (incidentId: string) =>
+    USE_DEMO_DATA
+      ? Promise.resolve(demoIncidentBriefing(incidentId))
+      : apiFetch<IncidentBriefing>(`/api/incidents/${incidentId}/briefing`),
 };

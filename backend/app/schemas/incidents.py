@@ -45,3 +45,30 @@ class IncidentDetailResponse(IncidentResponse):
     alerts: list[dict] = Field(default_factory=list)
     root_cause_scores: list[RootCauseScoreResponse] = Field(default_factory=list)
     timeline: list[TimelineEvent] = Field(default_factory=list)
+
+
+class IncidentImpact(BaseModel):
+    affected_services: list[str]
+    alert_count: int
+    duration_minutes: float | None = None
+    status: str
+
+
+class SuspectedRootCause(BaseModel):
+    service_name: str | None = None
+    score: float | None = None
+    confidence: str
+    why: str
+
+
+class IncidentBriefingResponse(BaseModel):
+    incident_id: uuid.UUID
+    title: str
+    status: str
+    severity: str
+    summary: str
+    suspected_root_cause: SuspectedRootCause
+    impact: IncidentImpact
+    evidence: list[str]
+    recommended_actions: list[str]
+    markdown: str

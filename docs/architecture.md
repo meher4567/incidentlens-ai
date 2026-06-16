@@ -162,6 +162,8 @@ checkout-service
 - `GET /api/alerts` — canonical (deduped) alerts
 - `GET /api/incidents` — list
 - `GET /api/incidents/{id}` — detail with timeline + RCA scores
+- `GET /api/incidents/{id}/briefing` — operator handoff with evidence,
+  recommended actions, and Markdown export
 
 ### Health
 - `GET /healthz` — lightweight database health check

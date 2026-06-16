@@ -25,6 +25,8 @@ services can also show secondary symptoms as the cascade spreads.
    graph adjacency.
 8. RCA ranks candidate services using timing, graph position, blast radius,
    metric jump magnitude, and alert count.
+9. Incident briefing converts the incident detail into an operator handoff:
+   impact, suspected root cause, evidence, and recommended next actions.
 
 ## What The Dashboard Should Show
 
@@ -32,7 +34,7 @@ services can also show secondary symptoms as the cascade spreads.
 |---|---|
 | Overview | Active incident count, affected services, ingestion rate, recent incidents |
 | Service Health | p95 latency and error-rate movement around the incident window |
-| Incident Detail | Timeline sorted by first observed alert |
+| Incident Detail | Operator briefing, Markdown handoff, and timeline sorted by first observed alert |
 | Root Cause Ranking | Highest score on the likely upstream failure point |
 | Anomaly Methods | Precision-recall comparison for detector behavior |
 
@@ -44,6 +46,8 @@ services can also show secondary symptoms as the cascade spreads.
 - Can it connect symptoms across a dependency graph?
 - Does the RCA ranking provide inspectable evidence instead of a black-box
   label?
+- Can it turn detection output into an actionable handoff for an on-call
+  engineer?
 - Are quality gates reproducible through CI and local commands?
 
 ## Known Boundaries

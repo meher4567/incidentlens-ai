@@ -17,6 +17,7 @@ incidents, and ranks likely root causes with an interpretable model.
 - Isolation Forest comparator for multi-metric anomaly detection experiments.
 - Alert debounce, deduplication, and dependency-aware incident clustering.
 - Logistic-regression RCA ranker with persisted feature contributions.
+- Operator-ready incident briefings with evidence, next actions, and Markdown handoff export.
 - React dashboard for overview metrics, service health, incidents, and PR curves.
 - Reproducible quality gates for backend tests, frontend tests, build, lint, and audit.
 
@@ -85,6 +86,10 @@ For a smaller local demo:
 make quick-demo
 ```
 
+Runtime configuration is documented in `.env.example`. The defaults work for
+the Docker Compose demo; copy the template only when overriding local ports,
+database URLs, CORS origins, or frontend demo mode.
+
 For a frontend-only preview with deterministic sample data:
 
 ```bash
@@ -110,8 +115,15 @@ Frontend:
 ```bash
 cd frontend
 npm test
+npm run lint
 npm run build
 npm audit --audit-level=moderate
+```
+
+Container configuration:
+
+```bash
+docker compose config --quiet
 ```
 
 ## Benchmarking
