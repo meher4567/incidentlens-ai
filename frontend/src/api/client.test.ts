@@ -25,7 +25,7 @@ describe("api client", () => {
 
     expect(result).toEqual({ ingested: 1, errors: [] });
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/logs/batch",
+      "/api/logs/batch",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ events: [{ service: "api-gateway" }] }),
@@ -73,7 +73,7 @@ describe("api client", () => {
 
     expect(result.suspected_root_cause.service_name).toBe("payment-service");
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/incidents/incident-1/briefing",
+      "/api/incidents/incident-1/briefing",
       expect.objectContaining({
         headers: expect.objectContaining({ "Content-Type": "application/json" }),
       }),

@@ -13,14 +13,32 @@ const NAV_ITEMS = [
   { path: "/anomalies", label: "Anomaly Methods" },
 ];
 
+function NotFound() {
+  return (
+    <section className="empty-state empty-state--panel">
+      <span className="eyebrow">404</span>
+      <h2>Page not found</h2>
+      <p>The operations view you requested does not exist.</p>
+      <Link className="button button--link" to="/">
+        Return to overview
+      </Link>
+    </section>
+  );
+}
+
 export default function App() {
   const location = useLocation();
 
   return (
     <div className="app">
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
       <header className="app-header">
-        <h1 className="app-title">IncidentLens AI</h1>
-        <nav className="app-nav">
+        <h1 className="app-title">
+          <Link to="/">IncidentLens <span>AI</span></Link>
+        </h1>
+        <nav className="app-nav" aria-label="Primary navigation">
           {NAV_ITEMS.map((item) => {
             const isActive =
               item.path === "/" ? location.pathname === "/" : location.pathname.startsWith(item.path);
@@ -30,14 +48,19 @@ export default function App() {
                 key={item.path}
                 to={item.path}
                 className={`nav-link ${isActive ? "nav-link--active" : ""}`}
+                aria-current={isActive ? "page" : undefined}
               >
                 {item.label}
               </Link>
             );
           })}
         </nav>
+        <span className="environment-badge">
+          <span className="environment-dot" aria-hidden="true" />
+          {import.meta.env.VITE_DEMO_MODE === "true" ? "Demo dataset" : "Live pipeline"}
+        </span>
       </header>
-      <main className="app-main">
+      <main className="app-main" id="main-content">
         <Routes>
           <Route path="/" element={<Overview />} />
           <Route
@@ -64,6 +87,7 @@ export default function App() {
               </Suspense>
             }
           />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
     </div>

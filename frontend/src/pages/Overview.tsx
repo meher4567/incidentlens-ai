@@ -76,7 +76,7 @@ export default function Overview() {
         </section>
       </div>
 
-      <div className="grid grid-4" style={{ marginBottom: 32 }}>
+      <div className="grid grid-4 stat-grid">
         <div className="card stat-tile">
           <span className="stat-value">
             {logCounts?.total_logs?.toLocaleString() ?? "-"}
@@ -84,10 +84,8 @@ export default function Overview() {
           <span className="stat-label">Total Logs Ingested</span>
         </div>
         <div className="card stat-tile">
-          <span className="stat-value">
-            {overview?.recent_events_per_min ?? "-"}
-          </span>
-          <span className="stat-label">Ingestion Rate (events/min)</span>
+          <span className="stat-value">{overview?.total_services ?? "-"}</span>
+          <span className="stat-label">Monitored Services</span>
         </div>
         <div className="card stat-tile">
           <span className="stat-value">
@@ -103,45 +101,37 @@ export default function Overview() {
         </div>
       </div>
 
-      <div className="grid grid-2" style={{ marginBottom: 24 }}>
-        <div className="card stat-tile">
-          <span className="stat-value">
-            {activeIncidentCount}
-          </span>
-          <span className="stat-label">Active Incidents</span>
+      <section className="card section-card">
+        <div className="section-heading">
+          <div>
+            <h3 className="card-title">Recent Incidents</h3>
+            <p>Correlated alert groups, ordered by first signal.</p>
+          </div>
+          <Link className="text-link" to="/incidents">View all incidents</Link>
         </div>
-        <div className="card stat-tile">
-          <span className="stat-value">
-            {overview?.total_services ?? "-"}
-          </span>
-          <span className="stat-label">Monitored Services</span>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 24 }}>
-        <h3 className="card-title">Recent Incidents</h3>
         {incLoading && <div className="loading">Loading incidents...</div>}
         {incidentList.length === 0 && !incLoading ? (
           <div className="empty-state">
             No incidents detected yet. Run the pipeline to see results.
           </div>
         ) : (
-          <div className="table-wrapper">
+          <div className="table-wrapper" tabIndex={0} aria-label="Recent incidents table">
             <table>
+              <caption className="sr-only">Recent correlated incidents</caption>
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Severity</th>
-                  <th>Start Time</th>
-                  <th>Affected Services</th>
-                  <th>Alert Count</th>
+                  <th scope="col">ID</th>
+                  <th scope="col">Severity</th>
+                  <th scope="col">Start Time</th>
+                  <th scope="col">Affected Services</th>
+                  <th scope="col">Alert Count</th>
                 </tr>
               </thead>
               <tbody>
                 {incidentList.map((inc: IncidentSummary) => (
                   <tr key={inc.id}>
                     <td>
-                      <Link to={`/incidents/${inc.id}`} style={{ color: "var(--color-primary)" }}>
+                      <Link className="text-link id-link" to={`/incidents/${inc.id}`} title={inc.id}>
                         {inc.id?.slice(0, 8)}...
                       </Link>
                     </td>
@@ -159,7 +149,7 @@ export default function Overview() {
             </table>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }

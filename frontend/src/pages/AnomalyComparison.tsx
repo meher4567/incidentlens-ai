@@ -11,6 +11,7 @@ import {
   Legend,
 } from "recharts";
 import { metricsApi, type PRCurveResponse } from "../api/client";
+import { buildComparisonData } from "./anomalyComparisonData";
 
 export default function AnomalyComparison() {
   const {
@@ -22,49 +23,31 @@ export default function AnomalyComparison() {
     queryFn: metricsApi.prCurves,
   });
 
-  const chartData: Array<{
-    recall: number;
-    mad_precision?: number;
-    if_precision?: number;
-  }> = [];
-
-  if (prData) {
-    const allRecalls = new Set<number>();
-    prData.mad.forEach((point) => allRecalls.add(point.recall));
-    prData.isolation_forest.forEach((point) => allRecalls.add(point.recall));
-    const sortedRecalls = Array.from(allRecalls).sort((a, b) => a - b);
-
-    sortedRecalls.forEach((recall) => {
-      const madPoint = prData.mad.find((point) => Math.abs(point.recall - recall) < 0.001);
-      const isolationPoint = prData.isolation_forest.find(
-        (point) => Math.abs(point.recall - recall) < 0.001,
-      );
-      chartData.push({
-        recall,
-        mad_precision: madPoint?.precision,
-        if_precision: isolationPoint?.precision,
-      });
-    });
-  }
+  const chartData = buildComparisonData(prData);
 
   return (
     <div>
-      <h2 className="card-title" style={{ marginBottom: 24 }}>
-        Anomaly Methods Comparison
-      </h2>
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">Model evaluation</span>
+          <h2 className="page-title">Anomaly Methods</h2>
+          <p className="page-description">Transparent held-out comparison of robust MAD and Isolation Forest detectors.</p>
+        </div>
+        <span className="status-chip">Held-out evaluation</span>
+      </div>
 
       {isLoading && <div className="loading">Loading benchmark data...</div>}
 
       {error && !isLoading && (
-        <div className="card" style={{ marginBottom: 24 }}>
-          <p style={{ color: "var(--color-text-muted)" }}>
+        <div className="card section-card">
+          <p className="muted-copy">
             No benchmark data available. Run make benchmark to generate PR curves.
           </p>
         </div>
       )}
 
       {prData?.summary && (
-        <div className="grid grid-3" style={{ marginBottom: 24 }}>
+        <div className="grid grid-3 stat-grid">
           <div className="card stat-tile">
             <span className="stat-label">MAD F1 Score</span>
             <span className="stat-value">
@@ -81,7 +64,7 @@ export default function AnomalyComparison() {
           </div>
           <div className="card stat-tile">
             <span className="stat-label">MAD Precision / Recall</span>
-            <span className="stat-value" style={{ fontSize: "1rem" }}>
+            <span className="stat-value stat-value--compact">
               {prData.summary.mad ? (
                 <>
                   P: {prData.summary.mad.precision.toFixed(3)} / R:{" "}
@@ -96,37 +79,41 @@ export default function AnomalyComparison() {
       )}
 
       {chartData.length > 0 && (
-        <div className="card">
+        <section className="card chart-card">
           <h3 className="card-title">Precision-Recall Curves</h3>
-          <div style={{ marginBottom: 8, fontSize: "0.75rem", color: "var(--color-text-muted)" }}>
+          <p className="chart-description">
             MAD robust z-score compared with Isolation Forest on held-out incidents
-          </div>
-          <ResponsiveContainer width="100%" height={400}>
-            <LineChart data={chartData}>
+          </p>
+          <div className="chart-canvas chart-canvas--large" role="img" aria-label="Precision-recall curves. MAD maintains higher precision than Isolation Forest across the measured recall range.">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData} margin={{ top: 8, right: 8, left: 8, bottom: 28 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis
                 dataKey="recall"
-                stroke="var(--color-text-muted)"
+                type="number"
+                stroke="#9aa5a1"
                 fontSize={11}
                 label={{
                   value: "Recall",
                   position: "insideBottom",
-                  offset: -5,
-                  style: { fill: "var(--color-text-muted)", fontSize: 12 },
+                  offset: -16,
+                  style: { fill: "#9aa5a1", fontSize: 12 },
                 }}
                 domain={[0, 1]}
+                ticks={[0, 0.2, 0.4, 0.6, 0.8, 1]}
                 tickFormatter={(value) => value.toFixed(1)}
               />
               <YAxis
-                stroke="var(--color-text-muted)"
+                stroke="#9aa5a1"
                 fontSize={11}
                 label={{
                   value: "Precision",
                   angle: -90,
                   position: "insideLeft",
-                  style: { fill: "var(--color-text-muted)", fontSize: 12 },
+                  style: { fill: "#9aa5a1", fontSize: 12 },
                 }}
                 domain={[0, 1]}
+                ticks={[0, 0.2, 0.4, 0.6, 0.8, 1]}
                 tickFormatter={(value) => value.toFixed(1)}
               />
               <Tooltip
@@ -141,23 +128,26 @@ export default function AnomalyComparison() {
               <Line
                 type="monotone"
                 dataKey="mad_precision"
-                stroke="var(--color-primary)"
+                stroke="#2dd4bf"
                 name="MAD z-score"
-                dot={false}
+                dot={{ r: 3 }}
                 strokeWidth={2}
+                isAnimationActive={false}
               />
               <Line
                 type="monotone"
                 dataKey="if_precision"
-                stroke="var(--color-warning)"
+                stroke="#f59e0b"
                 name="Isolation Forest"
-                dot={false}
+                dot={{ r: 3 }}
                 strokeWidth={2}
                 strokeDasharray="5 5"
+                isAnimationActive={false}
               />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
       )}
 
       {!isLoading && !error && chartData.length === 0 && (

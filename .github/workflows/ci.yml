@@ -6,48 +6,64 @@ on:
   pull_request:
     branches: [main, master]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   lint-and-type-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
       - name: Install dependencies
-        run: pip install ruff==0.2.1 mypy==1.8.0 -r backend/requirements.txt
-      - name: Ruff check
-        run: ruff check backend/ worker/ generator/ benchmarks/
+        run: pip install -r backend/requirements-dev.txt
+      - name: Ruff lint and format check
+        run: |
+          ruff check backend/ worker/ generator/ benchmarks/
+          ruff format --check backend/ worker/ generator/ benchmarks/
       - name: Mypy type check
         run: mypy backend/ --ignore-missing-imports
+      - name: Audit Python runtime dependencies
+        run: pip-audit -r backend/requirements.txt
 
-  frontend-build:
+  frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Install frontend dependencies
+      - name: Install locked dependencies
         working-directory: frontend
         run: npm ci
-      - name: Frontend tests
+      - name: Test, lint, and build
         working-directory: frontend
-        run: npm test
-      - name: Frontend lint
-        working-directory: frontend
-        run: npm run lint
-      - name: Frontend build
-        working-directory: frontend
-        run: npm run build
-      - name: Frontend audit
+        run: npm test && npm run lint && npm run build
+      - name: Audit production and development dependencies
         working-directory: frontend
         run: npm audit --audit-level=moderate
 
   backend-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
     services:
       postgres:
         image: postgres:16-alpine
@@ -62,27 +78,29 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
-
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r backend/requirements.txt
-
-      - name: Run backend tests
+        run: pip install -r backend/requirements-dev.txt
+      - name: Run tests with enforced coverage
         env:
           DATABASE_URL: postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
-        run: |
-          cd backend && python -m pytest tests/ -v --cov=app --cov-report=term --cov-report=xml
+        run: >-
+          python -m pytest backend/tests/ -v
+          --cov=backend.app --cov=generator
+          --cov-report=term-missing --cov-report=xml
+          --cov-fail-under=80
 
-  integration-test:
+  migrations:
     runs-on: ubuntu-latest
-    needs: backend-tests
+    timeout-minutes: 10
     services:
       postgres:
         image: postgres:16-alpine
@@ -97,67 +115,72 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
-
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - run: pip install -r backend/requirements-dev.txt
+      - name: Upgrade schema and detect model drift
+        env:
+          DATABASE_URL: postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
+        run: python -m alembic upgrade head && python -m alembic check
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install pytest-timeout
-
-      - name: Run integration test
+  benchmark-quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [lint-and-type-check, backend-tests, migrations]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: incidentlens
+          POSTGRES_PASSWORD: incidentlens
+          POSTGRES_DB: incidentlens
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - run: pip install -r backend/requirements-dev.txt
+      - name: Run deterministic held-out evaluation
         env:
           DATABASE_URL: postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
         run: |
           python -m alembic upgrade head
-          cd backend && python -m pytest tests/test_integration.py -v --timeout=120
-
-  benchmark-smoke:
-    runs-on: ubuntu-latest
-    needs: integration-test
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: incidentlens
-          POSTGRES_PASSWORD: incidentlens
-          POSTGRES_DB: incidentlens
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r backend/requirements.txt
-
-      - name: Run benchmark smoke tests
-        env:
-          DATABASE_URL: postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
-        run: |
-          python -m alembic upgrade head
-          python -m generator.generate_logs --events 5000 --output /tmp/logs.jsonl --truth /tmp/truth.jsonl
+          python -m generator.generate_logs --events 40000 --output /tmp/logs.jsonl --truth /tmp/truth.jsonl
           python -m backend.scripts.seed --truth /tmp/truth.jsonl
           python -m backend.scripts.import_logs --input /tmp/logs.jsonl --direct-db
+          python -m backend.scripts.run_pipeline --aggregate-only
           python -m backend.scripts.train_isolation_forest
-          python -m backend.scripts.run_pipeline --full
+          python -m backend.scripts.run_pipeline --process-only
           python -m backend.scripts.train_rca
-          python -m benchmarks.anomaly_pr
-          python -m benchmarks.dedup_compression
-          python -m benchmarks.detection_rate
-          python -m benchmarks.rca_accuracy
+          python -m backend.scripts.run_pipeline --score-only
+          python -m benchmarks.quality_gate
+
+  container-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [frontend, lint-and-type-check]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build production images
+        env:
+          POSTGRES_PASSWORD: ci-only-password
+          API_KEY: ci-only-api-key
+        run: docker compose -f compose.prod.yml build api frontend

@@ -1,108 +1,155 @@
-# Deployment Readiness
+# Production Deployment Runbook
 
-IncidentLens AI is packaged as a Docker Compose stack with separate API,
-frontend, PostgreSQL, Redis, aggregation worker, detection worker, and Celery
-Beat services. The same service boundaries can be moved to a VM, container
-platform, or managed app host.
+`compose.prod.yml` is the supported production-shaped deployment. It separates
+schema migration, API, workers, scheduler, frontend proxy, PostgreSQL, Redis,
+and shared model artifacts. `docker-compose.yml` is intentionally optimized for
+local development and exposes more ports.
 
-## Runtime Services
+## Prerequisites
 
-| Service | Purpose | Health Signal |
-|---|---|---|
-| `api` | FastAPI ingestion and dashboard API | `GET /healthz`, `GET /api/health` |
-| `frontend` | Vite React dashboard | HTTP 200 on port `5173` |
-| `db` | PostgreSQL event and incident store | `pg_isready` |
-| `redis` | Celery broker | `redis-cli ping` |
-| `worker_aggregate` | Metric window aggregation | Celery worker process healthy |
-| `worker_detect` | Detection, alerting, clustering, RCA | Celery worker process healthy |
-| `celery_beat` | Scheduled pipeline triggers | Celery Beat process healthy |
+- Docker Engine with Compose v2
+- 4 GB RAM for the complete stack
+- Two independently generated secrets
 
-Docker Compose defines health checks for PostgreSQL, Redis, the API, and the
-frontend so dependent services wait for readiness instead of only container
-startup.
-
-## Required Environment
-
-| Variable | Used By | Example |
-|---|---|---|
-| `APP_NAME` | API | `IncidentLens AI` |
-| `APP_VERSION` | API | `0.1.0` |
-| `DATABASE_URL` | API, workers, scripts | `postgresql://incidentlens:incidentlens@db:5432/incidentlens` |
-| `DATABASE_URL_ASYNC` | API async DB clients | Optional; derived from `DATABASE_URL` when unset |
-| `REDIS_URL` | API, workers | `redis://redis:6379/0` |
-| `CORS_ALLOWED_ORIGINS` | API | `http://localhost:5173,http://127.0.0.1:5173` |
-| `POSTGRES_PORT` | Docker Compose host port | `5432` |
-| `REDIS_PORT` | Docker Compose host port | `6379` |
-| `API_PORT` | Docker Compose host port | `8000` |
-| `FRONTEND_PORT` | Docker Compose host port | `5173` |
-| `VITE_API_URL` | Frontend | `http://localhost:8000` |
-| `VITE_DEMO_MODE` | Frontend demo preview only | `true` |
-
-The backend accepts comma-separated `CORS_ALLOWED_ORIGINS`. For Docker and most
-local runs, setting only `DATABASE_URL` is enough because the async SQLAlchemy
-URL is derived with the `postgresql+asyncpg` driver.
-
-If default host ports are already in use, override the Compose port variables in
-`.env` before running `docker compose up -d`.
-
-## Release Gate
-
-Run these checks before publishing a release:
+Create a local `.env` without committing it:
 
 ```bash
-python -m pytest
-python -m ruff check backend worker generator benchmarks
-python -m mypy backend --ignore-missing-imports
-
-cd frontend
-npm test
-npm run lint
-npm run build
-npm audit --audit-level=moderate
+cp .env.example .env
+openssl rand -hex 24   # POSTGRES_PASSWORD
+openssl rand -hex 32   # API_KEY
 ```
 
-The GitHub Actions workflow runs backend tests, frontend tests/build/audit,
-lint/type-check, an integration test, and benchmark smoke checks on every push
-and pull request.
+Set the generated values in `.env`. Keep `VITE_API_URL` empty so the browser
+uses the same-origin Nginx proxy. Set `VITE_DEMO_MODE=false` for any real stack.
 
-## First Deploy Runbook
+## Start and verify
 
 ```bash
-docker compose up -d --build
-python -m alembic upgrade head
-python -m backend.scripts.seed --skip-truth
+docker compose -f compose.prod.yml config --quiet
+docker compose -f compose.prod.yml up -d --build
+docker compose -f compose.prod.yml ps
+
+curl --fail http://localhost:8080/healthz
+curl --fail http://localhost:8080/api/ready
+curl --fail http://localhost:8080/api/health
 ```
 
-For a demo or staging environment with generated incident truth:
+The first start runs `alembic upgrade head` in a one-shot `migrate` container.
+The API and workers wait for that job, PostgreSQL, and Redis. The frontend then
+waits for API readiness.
 
-```bash
-make demo
-```
-
-## Health Check Commands
-
-```bash
-curl http://localhost:8000/healthz
-curl http://localhost:8000/api/health
-curl http://localhost:5173
-```
-
-Expected API health response:
+Expected readiness response:
 
 ```json
-{
-  "status": "ok"
-}
+{"status":"ready","database":"connected"}
 ```
 
-The detailed health endpoint should report database and Redis availability.
+Seed only topology in a non-benchmark environment:
 
-## Operational Notes
+```bash
+docker compose -f compose.prod.yml exec api python -m backend.scripts.seed --skip-truth
+```
 
-- Generated JSONL logs and benchmark result folders are ignored by Git.
-- Benchmarks should be compared on the same machine class and Docker resource
-  limits.
-- RCA scores are explainable but depend on the generated service topology and
-  available incident truth during training.
-- The dashboard demo mode is isolated to the frontend and must not be used as
-  evidence that backend ingestion or detection ran.
+## Runtime map
+
+| Service | Exposure | Health signal |
+|---|---|---|
+| `frontend` | Host `${FRONTEND_PORT:-8080}` | Nginx `/healthz` proxy |
+| `api` | Private port 8000 | `/healthz` and `/api/ready` |
+| `db` | Private port 5432 | `pg_isready` |
+| `redis` | Private port 6379 | `redis-cli ping` |
+| `worker_aggregate` | Private | Targeted Celery ping |
+| `worker_detect` | Private | Targeted Celery ping |
+| `celery_beat` | Private | Restart policy and logs |
+| `migrate` | One shot | Exit code 0 |
+
+Mutation example:
+
+```bash
+curl --fail \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{"logs":[]}' \
+  http://localhost:8080/api/logs/batch
+```
+
+Requests without the configured key receive 401. Set
+`INGEST_RATE_LIMIT_PER_MINUTE` to the maximum accepted ingestion requests per
+identity; production Compose defaults to 120. `MAX_REQUEST_BODY_BYTES` defaults
+to 5 MB.
+
+## Observability
+
+The private API exposes Prometheus text format at `/metrics`. Scrape the API
+container on port 8000 from the Compose network; avoid publishing the endpoint
+without authentication. Useful series include:
+
+- `incidentlens_http_requests_total`
+- `incidentlens_http_request_duration_seconds`
+- `incidentlens_http_requests_in_progress`
+
+Every HTTP response includes `X-Request-ID` and `X-Process-Time-Ms`. Supply your
+own `X-Request-ID` to correlate a request across ingress and application logs.
+
+Operational commands:
+
+```bash
+docker compose -f compose.prod.yml ps
+docker compose -f compose.prod.yml logs --tail=200 api worker_aggregate worker_detect celery_beat
+docker compose -f compose.prod.yml exec db pg_isready -U incidentlens
+docker compose -f compose.prod.yml exec redis redis-cli ping
+```
+
+## Upgrade and rollback
+
+Before an upgrade, back up PostgreSQL and preserve the named `models` volume.
+Then:
+
+```bash
+docker compose -f compose.prod.yml build
+docker compose -f compose.prod.yml run --rm migrate
+docker compose -f compose.prod.yml up -d
+```
+
+Migrations are forward-only in this project. Roll back application images only
+when the previous version is compatible with the upgraded schema. Otherwise,
+restore the matching database backup and image set together.
+
+## Backups and recovery
+
+```bash
+docker compose -f compose.prod.yml exec -T db \
+  pg_dump -U incidentlens -Fc incidentlens > incidentlens.dump
+
+docker compose -f compose.prod.yml exec -T db \
+  pg_restore -U incidentlens --clean --if-exists -d incidentlens < incidentlens.dump
+```
+
+Treat dumps and model volumes as sensitive operational data. Test restoration
+on an isolated stack before relying on it.
+
+## Release gate
+
+```bash
+make verify
+python -m alembic upgrade head
+python -m alembic check
+docker compose -f compose.prod.yml config --quiet
+docker compose -f compose.prod.yml build api frontend
+```
+
+CI adds the complete deterministic 40k-event quality gate and Python 3.11/3.13
+test matrix. Benchmark throughput on the target host separately; local numbers
+in this repository are evidence of the test environment, not an SLA.
+
+## Security posture and remaining work
+
+The backend image runs as a non-root user with a read-only filesystem,
+`no-new-privileges`, all Linux capabilities dropped, PID limits, and a writable
+`/tmp` only. Data services have no host ports. Secrets are mandatory Compose
+inputs and are never baked into frontend assets.
+
+For an internet-facing or multi-tenant deployment, add TLS termination, secret
+manager integration, authenticated read routes/RBAC, centralized logs, alerting,
+managed backups, and an ingress-level fail-closed rate limit. See
+[SECURITY.md](../SECURITY.md) for reporting and supported-version policy.

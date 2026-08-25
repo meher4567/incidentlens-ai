@@ -93,7 +93,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    command: celery -A worker.celery_app beat -l info
+    command: celery -A worker.celery_app beat -l info --schedule /tmp/celerybeat-schedule
     environment:
       DATABASE_URL: postgresql://incidentlens:incidentlens@db:5432/incidentlens
       REDIS_URL: redis://redis:6379/0
@@ -109,6 +109,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      target: development
     command: npm run dev -- --host 0.0.0.0
     ports:
       - "${FRONTEND_PORT:-5173}:5173"

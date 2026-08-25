@@ -35,13 +35,17 @@ python -m backend.scripts.train_rca
 python -m benchmarks.rca_accuracy
 ```
 
-## Ablation Plan
+## Feature-ablation status
 
-The ablation workflow retrains the ranker after dropping one feature at a time.
-The expected output is a table showing how much each feature changes top-3
-accuracy on held-out incidents.
+The repository does not claim measured feature-ablation results yet. With only
+six held-out incidents, a leave-one-feature-out table would be dominated by
+single-example changes and could look more conclusive than it is. The current
+evidence is instead the persisted per-candidate contribution vector and the
+held-out top-k gate.
 
-Key questions the ablation should answer:
+A defensible future ablation should increase scenario diversity first, then
+retrain after dropping one feature at a time and bootstrap the difference in
+top-k accuracy. It should answer:
 
 - How much signal comes from the earliest-alert feature?
 - Does graph position improve ranking beyond alert timing alone?
@@ -56,3 +60,5 @@ Key questions the ablation should answer:
 - The feature set is hand-designed and optimized for explainability.
 - Larger service graphs would need broader incident generation and more diverse
   training examples before drawing stronger conclusions.
+- Stored contributions explain the fitted linear model; they do not establish
+  causal feature importance.

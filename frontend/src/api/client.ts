@@ -8,7 +8,7 @@ import {
   demoServices,
 } from "./demoData";
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const BASE_URL = import.meta.env.VITE_API_URL ?? "";
 const USE_DEMO_DATA = import.meta.env.VITE_DEMO_MODE === "true";
 
 export interface LogCounts {

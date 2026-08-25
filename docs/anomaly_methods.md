@@ -26,7 +26,8 @@ Metrics scored per service/window:
 Default behavior:
 
 - Baselines use rolling median and MAD over previous closed windows.
-- MAD floors prevent division by near-zero baselines.
+- MAD floors prevent division by near-zero baselines: 0.01 error rate, 5 ms
+  p95 latency, and one request.
 - Default detection threshold is configured by `mad_threshold_default`.
 - Severity is derived from absolute score: high at 4+, critical at 6+.
 
@@ -39,13 +40,18 @@ per service from normal traffic and scores each metric window using:
 [request_count, error_rate, p95_latency_ms, unique_messages]
 ```
 
-The comparator is intentionally kept separate from MAD scoring so benchmark
-reports can compare precision-recall curves without hiding detector behavior.
+The comparator records one `multivariate` anomaly score per service for each
+300-second window. MAD remains metric-specific and runs on both configured
+window sizes. Keeping those records distinct lets benchmarks compare detector
+families without double-counting the four Isolation Forest inputs as four
+independent detections.
 
 ## Evaluation
 
-The benchmark suite compares detections against generated incident-truth
-windows and reports precision, recall, F1, and PR-curve points.
+The benchmark suite converts detections into service/time windows, then uses a
+deterministic global one-to-one match against generated incident truth. This
+prevents a long or duplicated detection from satisfying multiple incidents.
+It reports precision, recall, false-positive rate, F1, and PR-curve points.
 
 Run:
 
@@ -55,3 +61,6 @@ python -m benchmarks.detection_rate
 ```
 
 Generated results are written under `benchmarks/results/YYYY-MM-DD/`.
+
+The enforced 40k-event result and dataset limitations are documented in
+[benchmark_results.md](benchmark_results.md).

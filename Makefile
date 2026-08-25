@@ -1,5 +1,5 @@
-.PHONY: help build up down generate detect test lint clean train-if seed seed-prod migrate \
-        benchmark quick-demo demo
+.PHONY: help build up down generate aggregate detect score test lint clean train-if \
+        train-rca seed seed-prod migrate benchmark quick-demo demo verify prod-up prod-down
 
 help:
 	@echo "IncidentLens AI - Makefile Commands"
@@ -10,14 +10,20 @@ help:
 	@echo "make seed        Seed services, dependencies, and truth data"
 	@echo "make seed-prod   Seed services and dependencies (no truth data)"
 	@echo "make generate    Generate synthetic logs and ingest them"
-	@echo "make detect      Run aggregation, detection, clustering, and RCA ranking"
+	@echo "make aggregate   Aggregate logs into ML feature windows"
+	@echo "make detect      Detect anomalies and create incidents"
 	@echo "make train-if    Train Isolation Forest models on normal traffic"
+	@echo "make train-rca   Train and evaluate the RCA ranker"
+	@echo "make score       Score incidents using the trained RCA ranker"
 	@echo "make benchmark   Run all benchmarks"
 	@echo "make migrate     Run Alembic migrations"
 	@echo "make test        Run backend tests"
 	@echo "make lint        Run linting (ruff, mypy)"
 	@echo "make clean       Stop containers and remove volumes"
-	@echo "make quick-demo  Fast 1K event demo"
+	@echo "make quick-demo  Fast 5K event demo"
+	@echo "make verify      Run local code/test/dependency gates"
+	@echo "make prod-up     Build and start the hardened production stack"
+	@echo "make prod-down   Stop the production stack"
 
 build:
 	docker compose build
@@ -39,28 +45,47 @@ migrate:
 
 generate:
 	python -m generator.generate_logs --events 100000 --output logs.jsonl --truth incidents_truth.jsonl
+	python -m backend.scripts.seed --truth incidents_truth.jsonl
 	python -m backend.scripts.import_logs --input logs.jsonl --direct-db
 
+aggregate:
+	python -m backend.scripts.run_pipeline --aggregate-only
+
 detect:
-	python -m backend.scripts.run_pipeline --full
+	python -m backend.scripts.run_pipeline --process-only
+
+score:
+	python -m backend.scripts.run_pipeline --score-only
 
 train-if:
 	python -m backend.scripts.train_isolation_forest
 
+train-rca:
+	python -m backend.scripts.train_rca
+
 benchmark:
 	python -m benchmarks.ingestion_throughput
-	python -m benchmarks.detection_rate
-	python -m benchmarks.dedup_compression
-	python -m benchmarks.rca_accuracy
-	python -m benchmarks.anomaly_pr
+	python -m benchmarks.quality_gate
 	python -m benchmarks.api_latency
 
 test:
-	cd backend && python -m pytest tests/ -v --cov=app --cov-report=term
+	python -m pytest backend/tests/ -v --cov=backend.app --cov=generator \
+		--cov-report=term-missing --cov-fail-under=80
 
 lint:
 	ruff check backend/ worker/ generator/ benchmarks/
+	ruff format --check backend/ worker/ generator/ benchmarks/
 	mypy backend/ --ignore-missing-imports
+
+verify: lint test
+	pip-audit -r backend/requirements.txt
+	cd frontend && npm test && npm run lint && npm run build && npm audit --audit-level=moderate
+
+prod-up:
+	docker compose -f compose.prod.yml up -d --build
+
+prod-down:
+	docker compose -f compose.prod.yml down
 
 clean:
 	docker compose down -v
@@ -72,9 +97,11 @@ quick-demo:
 	python -m generator.generate_logs --events 5000 --output logs.jsonl --truth incidents_truth.jsonl
 	python -m backend.scripts.seed --truth incidents_truth.jsonl
 	python -m backend.scripts.import_logs --input logs.jsonl --direct-db
-	python -m backend.scripts.train_isolation_forest
-	python -m backend.scripts.run_pipeline --full
-	python -m backend.scripts.train_rca
+	$(MAKE) aggregate
+	$(MAKE) train-if
+	$(MAKE) detect
+	$(MAKE) train-rca
+	$(MAKE) score
 	@echo "Demo complete! Open http://localhost:5173"
 
 demo: up
@@ -82,9 +109,10 @@ demo: up
 	@echo "Waiting for services to be healthy..."
 	python -c "import time; time.sleep(10)"
 	$(MAKE) migrate
-	$(MAKE) seed
 	$(MAKE) generate
+	$(MAKE) aggregate
 	$(MAKE) train-if
 	$(MAKE) detect
-	python -m backend.scripts.train_rca
+	$(MAKE) train-rca
+	$(MAKE) score
 	@echo "Demo ready! Open http://localhost:5173"

@@ -1,170 +1,135 @@
 # IncidentLens AI — Architecture
 
-## System Overview
+IncidentLens is a small, production-shaped observability pipeline. Its main
+design constraint is evidence integrity: generated truth is available to
+training and benchmark code, but never to detection, alerting, clustering, or
+the dashboard.
 
-IncidentLens AI is an ML-powered observability platform that ingests synthetic microservice logs, aggregates metrics, detects anomalies, deduplicates alerts, clusters related alerts into incidents, reconstructs incident timelines, and ranks likely root causes using an interpretable learned RCA model.
+## Data flow
 
-## Architecture Diagram
-
-```
-┌──────────────┐    JSONL     ┌────────────────┐
-│  Synthetic   │─────────────▶│ POST /logs/batch│
-│  Generator   │              │  (FastAPI)      │
-│ (5 services) │              └───────┬────────┘
-└──────────────┘                      │
-       │                              ▼
-       │ truths.jsonl          ┌──────────────┐
-       │ (benchmarks only)    │  PostgreSQL 16│
-       │                      │  - raw_logs   │
-       │                      │  - metric_win │
-       │                      │  - anomalies  │
-       │                      │  - alerts     │
-       │                      │  - incidents  │
-       │                      │  - rca_scores │
-       │                      └──────┬───────┘
-       │                             │
-       ▼                             ▼
-┌──────────────┐    ┌───────────────────────────┐
-│  Benchmark   │    │  Celery Workers            │
-│  Scripts     │    │  ┌─────────────────────┐   │
-│  - throughput│    │  │ Aggregation (30s)   │   │
-│  - detection │    │  │ → metric_windows    │   │
-│  - dedup     │    │  └─────────┬───────────┘   │
-│  - rca       │    │            ▼               │
-│  - api_lat   │    │  ┌─────────────────────┐   │
-│  - anomaly_pr│    │  │ Detection           │   │
-└──────────────┘    │  │ → MAD + IF scores   │   │
-                    │  └─────────┬───────────┘   │
-                    │            ▼               │
-                    │  ┌─────────────────────┐   │
-                    │  │ Alerting + Dedupe   │   │
-                    │  │ → alerts            │   │
-                    │  └─────────┬───────────┘   │
-                    │            ▼               │
-                    │  ┌─────────────────────┐   │
-                    │  │ Clustering + RCA    │   │
-                    │  │ → incidents, scores │   │
-                    │  └─────────────────────┘   │
-                    └───────────────────────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │  React Dashboard │
-                    │  (4 screens)     │
-                    │  - Overview      │
-                    │  - Service Health│
-                    │  - Incident View │
-                    │  - Anomaly Comp  │
-                    └──────────────────┘
+```mermaid
+flowchart LR
+    G[Deterministic generator] -->|JSONL| I[FastAPI ingestion]
+    G -. truth side-channel .-> B[Benchmark evaluator]
+    I --> L[(PostgreSQL raw logs)]
+    C[Celery Beat] --> A[Aggregation worker]
+    A -->|closed 60s and 300s windows| M[(Metric windows)]
+    M --> D[MAD and Isolation Forest]
+    D --> E[Alert debounce]
+    E --> U[Trace and graph-aware dedup]
+    U --> K[Incident clustering]
+    K --> R[Explainable RCA ranker]
+    R --> O[(Incident evidence)]
+    O --> UI[React operator console]
+    O --> B
+    B --> Q{Hard quality gate}
 ```
 
-## Service Topology
+The dependency direction is caller to dependency:
 
-```
+```text
 api-gateway
-   ├──▶ auth-service
-   └──▶ checkout-service
-            ├──▶ payment-service
-            └──▶ inventory-service
-
-[Held-out only]
-checkout-service
-   └──▶ notification-service
+├── auth-service
+└── checkout-service
+    ├── payment-service
+    ├── inventory-service
+    └── notification-service
 ```
 
-## Component Contracts
+## Runtime components
 
-### Generator → Ingestion API
-- **Format:** JSONL (one log event per line)
-- **Log schema:** `{timestamp, service, level, message, request_id, trace_id, latency_ms, status_code, host, region}`
-- **Truth side-channel:** `incidents_truth.jsonl` — only read by benchmark scripts
-
-### Ingestion API → Database
-- **Batch endpoint:** `POST /api/logs/batch` — up to 1000 events
-- **Auto-creates unknown services**
-- **Indexes:** `(service_id, timestamp)`, `(trace_id)`
-
-### Aggregation Worker
-- **Schedule:** Every 30 seconds (Celery Beat)
-- **Windows:** 1-minute and 5-minute
-- **Metrics:** request_count, error_count, error_rate, p50/p95_latency_ms, unique_messages
-- **Baselines:** Rolling median + MAD over 30 closed windows
-- **MAD floors:** error_rate=0.001, p95_latency=5ms, request_count=1
-- **Idempotent:** UPSERT on (service_id, window_start, window_size_seconds)
-
-### Detection Worker
-- **Triggered by:** Aggregation completion
-- **Methods:** MAD robust z-score (primary) + Isolation Forest (comparator)
-- **MAD formula:** z = 0.6745 × (observed − median) / MAD
-- **IF features:** [request_count, error_rate, p95_latency_ms, unique_messages]
-- **Both detectors record per window** for PR-curve comparison
-
-### Alert Engine
-- **Debounce:** Same service + anomaly_type within 5 minutes
-- **Severity:** medium (|z|≥3), high (|z|≥4), critical (|z|≥6 or IF top 5%)
-- **Anomaly types:** error_rate_spike, latency_spike, traffic_spike, traffic_drop
-
-### Deduplication Engine
-- **Rule 1:** Same service + same anomaly_type + overlapping ±5min windows
-- **Rule 2:** Different services + shared trace_id + overlapping ±2min windows
-- **Output:** canonical alerts + deduplicated_alerts table
-
-### Incident Clusterer
-- **Signals:** Time proximity (5 min) + graph adjacency
-- **Close:** After 10 minutes with no new alert
-- **Merge:** Multiple matching incidents → oldest
-
-### RCA Ranker
-- **Model:** Logistic regression with class_weight='balanced'
-- **Features (per service per incident):**
-  1. is_earliest — first alert in incident
-  2. earliest_seconds_gap — gap to second alert
-  3. upstream_position — downstream count in incident
-  4. blast_radius — downstream count in full graph
-  5. metric_jump_magnitude — max |z-score|
-  6. alert_count — total alerts in incident
-- **Training:** 60 incidents (3 types × 20 each)
-- **Evaluation:** 40 held-out incidents (2 types × 20 each)
-- **Explainability:** feature_contributions JSONB on root_cause_scores
-
-## Database Schema
-
-| Table | Key | Purpose |
+| Component | Contract | Failure behavior |
 |---|---|---|
-| services | id (UUID) | Service registry |
-| service_dependencies | (upstream, downstream) | Directed dep graph |
-| raw_logs | id (bigserial) | Immutable log storage |
-| metric_windows | (service, window_start, size) | Aggregated metrics |
-| anomalies | (service, metric, window, detector) | Detection results |
-| alerts | id (UUID) | Coalesced anomaly alerts |
-| deduplicated_alerts | (canonical, duplicate) | Dedup relationships |
-| incidents | id (UUID) | Clustered incident groups |
-| incident_alerts | (incident, alert) | Alert-to-incident join |
-| incident_root_cause_scores | (incident, service) | RCA ranking |
-| incident_truth | truth_incident_id (UUID) | Ground truth (benchmarks only) |
-| watermark | (service_id, window_size_seconds) | Last closed window tracking |
-| internal_metrics | id (bigserial) | Platform self-observability |
+| Generator | Seeded, fixed event-time range and deterministic IDs | Same seed/config/event count produces byte-identical files |
+| Ingestion API | Validates batches of at most 1,000 logs and resolves services once per batch | Transaction rolls back and returns 503 on database failure |
+| Aggregator | Upserts 60s/300s windows behind a per-service watermark | Only closed windows are materialized; retries are idempotent |
+| Detector | MAD for three metrics; one multivariate IF score per 300s window | Missing or stale IF artifacts are skipped, never silently substituted |
+| Alerting | Event-time debounce keyed by service and anomaly type | Replays extend one alert rather than multiplying alerts |
+| Deduplication | Deterministic union-find over time, shared traces, and graph context | Suppressed alerts remain linked as evidence |
+| Clusterer | Groups canonical alerts by time proximity and graph adjacency | Incident duration is bounded; repeat runs do not duplicate membership |
+| RCA | Logistic regression ranks every attached candidate service | No model or insufficient candidates fails explicitly |
+| Evaluator | Service-aware overlap and global one-to-one truth matching | Any missing slice or sub-threshold metric fails the gate |
 
-## API Endpoints
+## Event-time and ML invariants
 
-### Ingestion
-- `POST /api/logs/batch` — batch ingest up to 1000 events
-- `GET /api/logs` — query with filters
-- `GET /api/logs/counts` — total log count
+- Scenario v2 covers a fixed eight-hour UTC interval beginning
+  `2026-01-01T00:00:00Z`; event count changes density, not incident placement.
+- The dataset contains 12 training incidents across three known types and six
+  held-out incidents across two distinct types. `notification-service` appears
+  only as a held-out root cause.
+- Truth records include seed and scenario provenance. They are loaded for RCA
+  training and evaluation only.
+- Aggregation excludes the partially observed final window and advances a
+  watermark only after successful writes.
+- MAD baselines use the 30 previous closed windows. Floors are 0.01 for error
+  rate, 5 ms for p95 latency, and one request for volume.
+- Isolation Forest is trained per service on truth-labeled normal 300-second
+  windows with the features `request_count`, `error_rate`, `p95_latency_ms`,
+  and `unique_messages`.
+- Evaluation converts windows to service-aware detections and performs a
+  deterministic one-to-one match, preventing one alert from satisfying
+  multiple truth incidents.
 
-### Services
-- `GET /api/services` — list
-- `POST /api/services/dependencies` — create edge
-- `GET /api/services/{id}/health` — time-series metrics
+## RCA model
 
-### Anomalies, Alerts, Incidents
-- `GET /api/anomalies` — list with detector filter
-- `GET /api/alerts` — canonical (deduped) alerts
-- `GET /api/incidents` — list
-- `GET /api/incidents/{id}` — detail with timeline + RCA scores
-- `GET /api/incidents/{id}/briefing` — operator handoff with evidence,
-  recommended actions, and Markdown export
+The ranker uses balanced logistic regression. For each incident/service pair it
+persists the score, rank, input feature vector, and per-feature contribution.
 
-### Health
-- `GET /healthz` — lightweight database health check
-- `GET /api/health` — database and Redis health check
+| Feature | Signal |
+|---|---|
+| `is_earliest` | Whether this service emitted the first incident alert |
+| `earliest_seconds_gap` | Delay from the incident's first alert |
+| `upstream_position` | Affected downstream services reachable in the incident |
+| `blast_radius` | Reachable downstream services in the complete graph |
+| `metric_jump_magnitude` | Largest absolute MAD score attached to the service |
+| `alert_count` | Canonical and suppressed evidence attached to the service |
+
+## Persistence and indexing
+
+| Table | Ownership and important key |
+|---|---|
+| `services`, `service_dependencies` | Service catalog and directed graph |
+| `raw_logs` | Immutable normalized events; service/time and trace indexes |
+| `metric_windows` | Unique service/window-size/window-start aggregate |
+| `anomalies` | Unique detector/metric/window result |
+| `alerts`, `deduplicated_alerts` | Canonical alert and suppression edges |
+| `incidents`, `incident_alerts` | Incident state and evidence membership |
+| `incident_root_cause_scores` | Candidate ranking and explanations |
+| `incident_truth` | Benchmark/training-only labels with provenance |
+| `watermark` | Per-service/window-size processing position |
+| `internal_metrics` | Pipeline run and diagnostic measurements |
+
+Alembic is the schema authority. CI upgrades a fresh PostgreSQL 16 database and
+runs `alembic check` to reject ORM/migration drift. Integer primary keys use a
+PostgreSQL `BIGINT` and a SQLite-compatible variant for fast unit tests.
+
+## API and operational boundaries
+
+- `GET /healthz` is process liveness and performs no dependency I/O.
+- `GET /api/ready` checks the database required to serve the product.
+- `GET /api/health` reports database and Redis status; Redis degradation is
+  visible but does not fail readiness because query traffic can still operate.
+- `GET /metrics` exposes internal Prometheus counters, latency histograms, and
+  in-flight gauges on the private API network.
+- Mutating `/api/*` routes require `X-API-Key` when configured. Ingestion also
+  enforces body size and a Redis-backed per-identity rate limit.
+- Every response carries a request ID, processing time, content-type protection,
+  frame denial, referrer policy, and restrictive permissions policy.
+- Synchronous SQL endpoints are normal FastAPI `def` handlers so blocking ORM
+  work runs in the thread pool rather than on the event loop.
+
+Production Compose keeps PostgreSQL, Redis, the API, and `/metrics` private.
+Nginx serves the SPA, provides its own `/healthz`, and proxies `/api` over the
+internal network. Backend containers are non-root, read-only, capability-free,
+and start only after the one-shot migration job succeeds.
+
+## Deliberate boundaries
+
+- Synthetic telemetry gives exact labels but is not evidence of production
+  accuracy or capacity.
+- The demo graph is intentionally small enough to inspect in an interview.
+- The ranker learns from 12 incidents; the six-incident held-out interval is
+  reported with uncertainty rather than presented as a broad ML claim.
+- Redis rate limiting is fail-open for availability after authentication. A
+  public multi-tenant deployment should put an additional fail-closed quota at
+  the ingress or API gateway.

@@ -1,65 +1,134 @@
-# Benchmark Methodology
+# Benchmark methodology and evidence
 
-IncidentLens includes benchmark scripts for validating the pipeline under a
-repeatable synthetic workload. Results are generated locally because throughput
-and latency depend heavily on machine size, Docker resource limits, and database
-configuration.
+IncidentLens evaluates detection, noise reduction, and RCA against deterministic
+incident truth. Benchmark commands fail with a non-zero exit code when
+prerequisites are missing or a result is below its documented threshold; an
+empty database is never reported as a successful benchmark.
 
-Generated benchmark artifacts are written to:
+## Evaluation protocol
 
-```text
-benchmarks/results/YYYY-MM-DD/
-```
+The seed-42 scenario spans eight event-time hours and emits 40,000 logs across
+six services. It contains:
 
-The generated result files are intentionally ignored by Git so that committed
-documentation stays environment-neutral.
+- 12 training incidents: four each for payment latency, authentication errors,
+  and inventory traffic loss.
+- 6 held-out incidents: three database-timeout cascades and three notification
+  silent failures.
+- Volume-independent incident timestamps and deterministic UUIDs, traces, and
+  random draws.
 
-## Benchmark Suite
+Ground truth has a scenario version, seed, generator run ID, split, affected
+services, affected metric, and root-cause service. Truth is only consumed by
+training/evaluation commands; detection, deduplication, clustering, and online
+RCA scoring cannot read it.
 
-| Benchmark | Script | What It Measures |
-|---|---|---|
-| Ingestion throughput | `benchmarks/ingestion_throughput.py` | Batch ingest rate and batch latency |
-| Detection rate | `benchmarks/detection_rate.py` | TPR/FPR against incident truth windows |
-| Dedup compression | `benchmarks/dedup_compression.py` | Alert-volume reduction during cascades |
-| RCA accuracy | `benchmarks/rca_accuracy.py` | Top-1/top-3 root-cause ranking accuracy |
-| API latency | `benchmarks/api_latency.py` | p50/p95/p99 dashboard endpoint latency |
-| Anomaly PR | `benchmarks/anomaly_pr.py` | Precision-recall comparison for detectors |
+Detection uses a shared 300-second comparison granularity. A prediction is
+matched to at most one truth window using deterministic, service-aware,
+one-to-one matching. This prevents a burst of duplicate predictions from
+inflating recall.
 
-## Acceptance Targets
+## Hard gates
 
-These are engineering targets for a local Docker Compose run on generated data,
-not hard-coded claims.
+| Measure | Required |
+|---|---:|
+| MAD recall | ≥80% |
+| MAD false-positive rate | ≤5% |
+| MAD F1 | ≥75% |
+| Isolation Forest recall | ≥75% |
+| Isolation Forest false-positive rate | ≤8% |
+| Deduplication compression | 40–90% |
+| Matched RCA training incidents | ≥10 |
+| Matched held-out incidents | all 6 |
+| Held-out RCA top-1 | ≥75% |
+| Held-out RCA top-3 | ≥90% |
+| HTTP ingestion errors | 0 |
+| HTTP ingestion throughput | ≥250 logs/s |
+| Every measured endpoint p95 | ≤250 ms |
 
-| Area | Target |
-|---|---|
-| Ingestion throughput | At least 500 logs/sec |
-| Detection recall | At least 85% on incident windows |
-| Detection false positive rate | Less than 15% on normal windows |
-| Dedup compression | At least 40% alert reduction on cascades |
-| RCA ranking | At least 70% top-3 accuracy on held-out incident types |
-| Incident detail API | p95 below 300 ms |
+The compression upper bound is deliberate: suppressing almost every alert can
+look efficient while actually over-grouping unrelated failures.
 
-## Reproducing Results
+## Reproduced result — 20 August 2026
+
+Environment: local Docker Engine, PostgreSQL 16 Alpine, Python 3.13, production
+Compose images, seed 42. Throughput and latency vary by host; ML outcomes are
+deterministic for this scenario.
+
+### Detection
+
+| Detector | TP | FP | FN | TN | Recall | FPR | Precision | F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| MAD | 42 | 11 | 8 | 509 | 84.00% | 2.12% | 79.25% | 81.55% |
+| Isolation Forest | 42 | 30 | 8 | 490 | 84.00% | 5.77% | 58.33% | 68.85% |
+
+MAD is the primary operational detector; Isolation Forest is the explicitly
+reported multivariate comparator.
+
+### Alert reduction and RCA
+
+| Measure | Result |
+|---|---:|
+| Alerts before deduplication | 264 |
+| Suppressed relationships | 173 |
+| Canonical alerts | 91 |
+| Compression | 65.5% |
+| RCA training incidents | 12 |
+| RCA held-out incidents | 6 |
+| Held-out top-1 | 83.33% |
+| Held-out top-3 | 100% |
+| Top-1 95% interval | 50–100% |
+
+Per held-out type, top-1 was 2/3 for database-timeout cascades and 3/3 for
+notification silent failures. The interval is wide because `n=6`; this is a
+promising controlled result, not a claim of production-wide generalization.
+
+### Production HTTP path
+
+| Measure | Result |
+|---|---:|
+| Events / batch size | 20,000 / 1,000 |
+| Successfully ingested | 20,000 |
+| Event errors | 0 |
+| Throughput | 7,746.6 logs/s |
+| Batch latency p50 / p95 | 120.3 / 140.9 ms |
+| `/api/metrics` p50 / p95 | 12.85 / 15.0 ms |
+| Slowest measured dashboard p95 | 15.0 ms |
+
+The HTTP benchmark ran through the production Nginx reverse proxy with API-key
+authentication and the Redis rate limiter enabled.
+
+## Reproduce the deterministic quality gate
+
+Use an empty PostgreSQL database:
 
 ```bash
-docker compose up -d
-make seed
-make generate
-make train-if
-make detect
+export DATABASE_URL=postgresql://incidentlens:incidentlens@localhost:5432/incidentlens
+
+python -m alembic upgrade head
+python -m generator.generate_logs \
+  --events 40000 \
+  --output /tmp/incidentlens-logs.jsonl \
+  --truth /tmp/incidentlens-truth.jsonl
+python -m backend.scripts.seed --truth /tmp/incidentlens-truth.jsonl
+python -m backend.scripts.import_logs --input /tmp/incidentlens-logs.jsonl --direct-db
+python -m backend.scripts.run_pipeline --aggregate-only
+python -m backend.scripts.train_isolation_forest
+python -m backend.scripts.run_pipeline --process-only
 python -m backend.scripts.train_rca
-make benchmark
+python -m backend.scripts.run_pipeline --score-only
+python -m benchmarks.quality_gate
 ```
 
-For a smaller smoke run, reduce generated events and run selected benchmark
-scripts directly.
+For HTTP measurements against a running stack:
 
-## Interpreting Results
+```bash
+python -m benchmarks.ingestion_throughput \
+  --api-url http://localhost:8080 \
+  --api-key "$API_KEY" \
+  --events 20000
+python -m benchmarks.api_latency --api-url http://localhost:8080
+```
 
-- Throughput should be evaluated with the same batch size across runs.
-- Detection metrics should be read together; high recall with excessive false
-  positives is not a useful operational result.
-- RCA accuracy is measured on matched detected incidents, so poor clustering can
-  reduce the effective evaluation sample.
-- API latency should be measured after the database is seeded and the dashboard
-  endpoints have representative data to query.
+Raw timestamped JSON/Markdown outputs are written below
+`benchmarks/results/YYYY-MM-DD/` and ignored by Git. This document is the
+reviewed, committed evidence record.

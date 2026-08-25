@@ -29,13 +29,13 @@ export default function IncidentDetail() {
   const { incidentId } = useParams<{ incidentId: string }>();
   const [copyState, setCopyState] = React.useState<"idle" | "copied" | "failed">("idle");
 
-  const { data: incidents } = useQuery({
+  const { data: incidents, isLoading: listLoading, error: listError } = useQuery({
     queryKey: ["incidents"],
     queryFn: () => incidentsApi.list({ limit: "50" }),
     enabled: !incidentId,
   });
 
-  const { data: incident, isLoading } = useQuery({
+  const { data: incident, isLoading, error: incidentError } = useQuery({
     queryKey: ["incident", incidentId],
     queryFn: () => incidentsApi.get(incidentId!),
     enabled: !!incidentId,
@@ -60,27 +60,35 @@ export default function IncidentDetail() {
     const list = Array.isArray(incidents) ? incidents : [];
     return (
       <div>
-        <h2 className="card-title" style={{ marginBottom: 24 }}>Incidents</h2>
-        {list.length === 0 ? (
-          <div className="empty-state">No incidents detected yet.</div>
-        ) : (
-          <div className="table-wrapper card">
+        <div className="page-heading">
+          <div>
+            <span className="eyebrow">Correlated operations</span>
+            <h2 className="page-title">Incidents</h2>
+            <p className="page-description">Alert cascades grouped into operator-ready investigations.</p>
+          </div>
+          {!listLoading && <span className="status-chip">{list.length} detected</span>}
+        </div>
+        {listLoading && <div className="loading" role="status">Loading incidents...</div>}
+        {listError && <div className="error-state" role="alert">Incidents could not be loaded.</div>}
+        {list.length > 0 ? (
+          <div className="table-wrapper card" tabIndex={0} aria-label="All incidents table">
             <table>
+              <caption className="sr-only">All correlated incidents</caption>
               <thead>
                 <tr>
-                  <th>ID</th>
-                  <th>Severity</th>
-                  <th>Start</th>
-                  <th>End</th>
-                  <th>Services</th>
-                  <th>Alerts</th>
+                  <th scope="col">ID</th>
+                  <th scope="col">Severity</th>
+                  <th scope="col">Start</th>
+                  <th scope="col">End</th>
+                  <th scope="col">Services</th>
+                  <th scope="col">Alerts</th>
                 </tr>
               </thead>
               <tbody>
                 {list.map((inc: IncidentSummary) => (
                   <tr key={inc.id}>
                     <td>
-                      <Link to={`/incidents/${inc.id}`} style={{ color: "var(--color-primary)" }}>
+                      <Link className="text-link id-link" to={`/incidents/${inc.id}`} title={inc.id}>
                         {inc.id.slice(0, 8)}...
                       </Link>
                     </td>
@@ -94,46 +102,48 @@ export default function IncidentDetail() {
               </tbody>
             </table>
           </div>
-        )}
+        ) : !listLoading && !listError ? (
+          <div className="empty-state empty-state--panel">No incidents detected yet.</div>
+        ) : null}
       </div>
     );
   }
 
   if (isLoading) return <div className="loading">Loading incident...</div>;
+  if (incidentError) return <div className="error-state" role="alert">Incident details could not be loaded.</div>;
   if (!incident) return <div className="empty-state">Incident not found.</div>;
 
   const inc: IncidentDetailData = incident;
   return (
     <div>
-      <Link to="/incidents" style={{ color: "var(--color-text-muted)", fontSize: "0.875rem" }}>
-        Back to incidents
+      <Link to="/incidents" className="back-link">
+        <span aria-hidden="true">←</span> Back to incidents
       </Link>
-      <h2 className="card-title" style={{ margin: "16px 0" }}>
-        Incident <code style={{ fontSize: "0.75rem" }}>{inc.id}</code>
-      </h2>
-      <div className="grid grid-3" style={{ marginBottom: 24 }}>
-        <div className="card">
-          <span className="stat-label">Severity</span>
-          <span className={`badge badge-${inc.severity}`} style={{ display: "block", marginTop: 4 }}>
-            {inc.severity}
-          </span>
+      <div className="page-heading incident-heading">
+        <div>
+          <span className="eyebrow">Active investigation</span>
+          <h2 className="page-title">Incident <code title={inc.id}>{inc.id.slice(0, 8)}</code></h2>
+          <p className="page-description">Detected {formatDateTime(inc.start_time)}</p>
         </div>
+        <span className={`badge badge-${inc.severity}`}>{inc.severity}</span>
+      </div>
+      <div className="grid grid-2 summary-grid">
         <div className="card">
           <span className="stat-label">Time Range</span>
-          <span style={{ fontSize: "0.875rem", display: "block", marginTop: 4 }}>
+          <span className="summary-value summary-value--small">
             {formatDateTime(inc.start_time)} - {inc.end_time ? formatDateTime(inc.end_time) : "Ongoing"}
           </span>
         </div>
         <div className="card">
           <span className="stat-label">Affected Services</span>
-          <span style={{ fontSize: "0.875rem", display: "block", marginTop: 4 }}>
+          <span className="summary-value summary-value--small">
             {inc.affected_service_names.join(", ")}
           </span>
         </div>
       </div>
 
       {briefing && (
-        <div className="card incident-briefing" style={{ marginBottom: 24 }}>
+        <section className="card incident-briefing section-card">
           <div className="briefing-header">
             <div>
               <span className="eyebrow">Operator handoff</span>
@@ -143,13 +153,14 @@ export default function IncidentDetail() {
               className="button"
               type="button"
               onClick={() => void copyBriefingMarkdown(briefing)}
+              aria-live="polite"
             >
               {copyState === "copied" ? "Copied" : "Copy Markdown"}
             </button>
           </div>
 
           {copyState === "failed" && (
-            <div className="error-state" style={{ padding: "12px 16px" }}>
+            <div className="error-state error-state--compact">
               Clipboard access failed. Select the briefing text manually.
               <textarea
                 className="markdown-fallback"
@@ -200,54 +211,47 @@ export default function IncidentDetail() {
               </ol>
             </section>
           </div>
-        </div>
+        </section>
       )}
 
-      <div className="card" style={{ marginBottom: 24 }}>
+      <section className="card section-card">
         <h3 className="card-title">Timeline</h3>
         {inc.timeline.length === 0 ? (
           <div className="empty-state">No timeline data.</div>
         ) : (
-          <div style={{ borderLeft: "2px solid var(--color-border)", paddingLeft: 16 }}>
+          <div className="timeline">
             {inc.timeline.map((event: TimelineEvent) => (
-              <div
-                key={event.alert_id}
-                style={{
-                  marginBottom: 12,
-                  padding: "8px 12px",
-                  background: "var(--color-bg)",
-                  borderRadius: "var(--radius)",
-                }}
-              >
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div key={event.alert_id} className="timeline-event">
+                <div className="timeline-event__content">
                   <span className={`badge badge-${event.severity}`}>{event.severity}</span>
                   <strong>{event.service_name}</strong>
-                  <span style={{ color: "var(--color-text-muted)", fontSize: "0.75rem" }}>
+                  <span className="timeline-event__type">
                     {event.anomaly_type}
                   </span>
-                  <span style={{ marginLeft: "auto", color: "var(--color-text-muted)", fontSize: "0.75rem" }}>
+                  <time className="timeline-event__time" dateTime={event.start_window}>
                     {new Date(event.start_window).toLocaleTimeString()}
-                  </span>
+                  </time>
                 </div>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </section>
 
-      <div className="card">
+      <section className="card section-card">
         <h3 className="card-title">Root Cause Ranking</h3>
         {inc.root_cause_scores.length === 0 ? (
           <div className="empty-state">No root cause scores computed yet.</div>
         ) : (
-          <div className="table-wrapper">
+          <div className="table-wrapper" tabIndex={0} aria-label="Root cause ranking table">
             <table>
+              <caption className="sr-only">Ranked root cause candidates and feature contributions</caption>
               <thead>
                 <tr>
-                  <th>Rank</th>
-                  <th>Service</th>
-                  <th>Score</th>
-                  <th>Feature Contributions</th>
+                  <th scope="col">Rank</th>
+                  <th scope="col">Service</th>
+                  <th scope="col">Score</th>
+                  <th scope="col">Feature Contributions</th>
                 </tr>
               </thead>
               <tbody>
@@ -256,7 +260,7 @@ export default function IncidentDetail() {
                     <td>#{rc.rank}</td>
                     <td><strong>{rc.service_name}</strong></td>
                     <td>{rc.score.toFixed(3)}</td>
-                    <td style={{ fontSize: "0.75rem", color: "var(--color-text-muted)" }}>
+                    <td className="feature-contributions">
                       {formatFeatureContributions(rc.feature_contributions)}
                     </td>
                   </tr>
@@ -265,7 +269,7 @@ export default function IncidentDetail() {
             </table>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }
