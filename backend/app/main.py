@@ -1,42 +1,42 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text as sa_text
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.responses import Response
 
 from backend.app.api import router as api_router
 from backend.app.core.config import Settings, get_settings
+from backend.app.core.http import ApiBoundaryMiddleware
 from backend.app.db.migrate import run_migrations
 from backend.app.db.session import sync_engine
 
 
-async def healthz():
-    """Health check endpoint."""
-    try:
-        with sync_engine.connect() as conn:
-            conn.execute(sa_text("SELECT 1"))
-        db_ok = True
-    except Exception:
-        db_ok = False
+def healthz():
+    """Cheap process liveness probe with no downstream dependencies."""
+    return {"status": "ok"}
 
-    return {
-        "status": "ok" if db_ok else "degraded",
-        "database": "connected" if db_ok else "disconnected",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+
+def metrics():
+    """Expose Prometheus metrics without coupling them to dashboard metrics."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 def create_app(
     settings: Settings | None = None,
     *,
-    run_startup_migrations: bool = True,
+    run_startup_migrations: bool | None = None,
 ) -> FastAPI:
     active_settings = settings or get_settings()
+    should_migrate = (
+        active_settings.run_startup_migrations
+        if run_startup_migrations is None
+        else run_startup_migrations
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if run_startup_migrations:
+        if should_migrate:
             run_migrations()
         yield
         sync_engine.dispose()
@@ -50,13 +50,15 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=active_settings.cors_origins,
-        allow_credentials=True,
+        allow_credentials=active_settings.cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(ApiBoundaryMiddleware, settings=active_settings)
 
     app.include_router(api_router, prefix="/api")
     app.add_api_route("/healthz", healthz, methods=["GET"])
+    app.add_api_route("/metrics", metrics, methods=["GET"], include_in_schema=False)
     return app
 
 

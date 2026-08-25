@@ -2,11 +2,17 @@
 Type compatibility layer: works with Postgres ARRAY/UUID/JSONB natively,
 falls back to SQLite-compatible variants (JSON text) for local testing.
 """
+
 import uuid
 
-from sqlalchemy import String
+from sqlalchemy import BigInteger, Integer, String
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.types import CHAR, TypeDecorator
+
+
+def CompatBigInteger():
+    """BIGINT in Postgres and exact INTEGER affinity for SQLite autoincrement."""
+    return BigInteger().with_variant(Integer, "sqlite")
 
 
 class CompatUUID(TypeDecorator):

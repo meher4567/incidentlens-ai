@@ -1,4 +1,5 @@
 """Test database models and schema validation."""
+
 from datetime import datetime, timezone
 
 import pytest

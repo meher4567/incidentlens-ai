@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.db.session import get_sync_session
@@ -45,7 +46,7 @@ def _log_entry_to_model(entry: LogEntry, service_id: uuid.UUID) -> RawLog:
 
 
 @router.post("/batch", response_model=LogBatchResponse, status_code=201)
-async def ingest_batch(
+def ingest_batch(
     batch: LogBatch,
     session: Session = Depends(get_sync_session),
 ):
@@ -58,11 +59,12 @@ async def ingest_batch(
 
     # Pre-fetch service name->id mapping for efficiency
     service_names = {e.service for e in batch.events}
-    existing_services: dict[str, uuid.UUID] = {}
-    for name in service_names:
-        svc = session.execute(select(Service.id).where(Service.name == name)).scalar_one_or_none()
-        if svc is not None:
-            existing_services[name] = svc
+    service_rows = session.execute(
+        select(Service.name, Service.id).where(Service.name.in_(service_names))
+    ).all()
+    existing_services: dict[str, uuid.UUID] = {
+        name: service_id for name, service_id in service_rows
+    }
 
     rows_to_insert = []
     for i, entry in enumerate(batch.events):
@@ -82,14 +84,18 @@ async def ingest_batch(
             errors.append(LogError(index=i, message=str(exc)))
 
     if rows_to_insert:
-        session.add_all(rows_to_insert)
-        session.commit()
+        try:
+            session.add_all(rows_to_insert)
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise HTTPException(status_code=503, detail="Log storage unavailable") from exc
 
     return LogBatchResponse(ingested=ingested, errors=errors)
 
 
 @router.post("/single", status_code=201)
-async def ingest_single(
+def ingest_single(
     entry: LogEntry,
     session: Session = Depends(get_sync_session),
 ):
@@ -109,9 +115,9 @@ async def ingest_single(
 
 
 @router.get("")
-async def query_logs(
+def query_logs(
     service: str | None = Query(None),
-    level: str | None = Query(None),
+    level: str | None = Query(None, pattern="^(DEBUG|INFO|WARN|ERROR|CRITICAL)$"),
     start_time: datetime | None = Query(None),
     end_time: datetime | None = Query(None),
     trace_id: uuid.UUID | None = Query(None),
@@ -140,7 +146,7 @@ async def query_logs(
 
 
 @router.get("/by-trace/{trace_id}")
-async def get_logs_by_trace(
+def get_logs_by_trace(
     trace_id: uuid.UUID,
     session: Session = Depends(get_sync_session),
 ):
@@ -153,7 +159,7 @@ async def get_logs_by_trace(
 
 
 @router.get("/counts")
-async def get_log_counts(
+def get_log_counts(
     session: Session = Depends(get_sync_session),
 ):
     """Get total log count and recent ingestion rate."""

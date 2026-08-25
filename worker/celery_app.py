@@ -24,6 +24,11 @@ app.conf.update(
     enable_utc=True,
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    task_soft_time_limit=270,
+    task_time_limit=300,
+    worker_prefetch_multiplier=1,
+    worker_max_tasks_per_child=100,
+    broker_connection_retry_on_startup=True,
     task_default_queue="celery",
     task_routes={
         "worker.tasks.aggregation.*": {"queue": "aggregate"},

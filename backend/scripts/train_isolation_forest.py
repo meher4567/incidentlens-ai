@@ -7,6 +7,7 @@ For each service, collects metric windows that fall outside any incident window
 Usage:
     python -m backend.scripts.train_isolation_forest
 """
+
 import argparse
 import pickle
 import uuid
@@ -25,6 +26,7 @@ from backend.app.models.metrics import MetricWindow
 from backend.app.models.ml_meta import ModelVersion
 from backend.app.models.services import Service
 from backend.app.models.truth import IncidentTruth
+from backend.app.services.detection import IF_WINDOW_SIZE_SECONDS
 
 settings = get_settings()
 
@@ -127,14 +129,14 @@ def train_if_for_service(
     Returns training metadata dict or None if insufficient data.
     """
     # Use 5-minute windows (more stable features)
-    windows = get_normal_windows(session, service.id, 300, incident_windows)
+    windows = get_normal_windows(session, service.id, IF_WINDOW_SIZE_SECONDS, incident_windows)
 
     if len(windows) < 10:
-        print(f"  {service.name}: insufficient normal windows ({len(windows)}), trying 60s fallback...")
-        windows = get_normal_windows(session, service.id, 60, incident_windows)
-        if len(windows) < 10:
-            print(f"  {service.name}: still insufficient ({len(windows)}), skipping")
-            return None
+        print(
+            f"  {service.name}: insufficient {IF_WINDOW_SIZE_SECONDS}s normal "
+            f"windows ({len(windows)}), skipping"
+        )
+        return None
 
     X = build_feature_matrix(windows)
     if X.shape[0] < 10:
@@ -173,7 +175,7 @@ def train_if_for_service(
             "contamination": contamination,
             "random_state": settings.seed,
             "feature_cols": FEATURE_COLS,
-            "window_size_seconds": 300,
+            "window_size_seconds": IF_WINDOW_SIZE_SECONDS,
         },
         metrics={
             "n_samples": int(X.shape[0]),
@@ -190,7 +192,7 @@ def train_if_for_service(
     }
 
 
-def train_models():
+def train_models(contamination: float = 0.05) -> list[dict]:
     """Train per-service Isolation Forest models and save to models/."""
     models_dir = Path(settings.models_dir)
     models_dir.mkdir(exist_ok=True)
@@ -203,15 +205,22 @@ def train_models():
         print(f"Loaded {len(incident_windows)} incident windows from truth data\n")
 
         if not incident_windows:
-            print("WARNING: No incident truth data found. Using all windows as normal.")
-            print("         Run 'make seed' first for accurate normal-window filtering.\n")
+            raise RuntimeError("incident truth is required for leakage-safe IF training")
 
         services = session.execute(select(Service)).scalars().all()
+        if not services:
+            raise RuntimeError("no services are available for IF training")
         print(f"Training IF models for {len(services)} services:\n")
 
         results = []
         for svc in services:
-            meta = train_if_for_service(session, svc, incident_windows, models_dir)
+            meta = train_if_for_service(
+                session,
+                svc,
+                incident_windows,
+                models_dir,
+                contamination=contamination,
+            )
             if meta:
                 results.append(meta)
                 print(f"  ✓ {svc.name}: {meta['n_samples']} samples -> {meta['model_path']}")
@@ -220,6 +229,11 @@ def train_models():
 
         print(f"\nTrained {len(results)}/{len(services)} models")
         print(f"Models saved to {models_dir}/")
+        if len(results) != len(services):
+            raise RuntimeError(
+                f"IF training contract failed: trained {len(results)}/{len(services)} models"
+            )
+        return results
 
     except Exception as exc:
         session.rollback()
@@ -237,8 +251,8 @@ def main():
         default=0.05,
         help="Expected contamination fraction (default: 0.05)",
     )
-    _args = parser.parse_args()
-    train_models()
+    args = parser.parse_args()
+    train_models(contamination=args.contamination)
 
 
 if __name__ == "__main__":

@@ -7,8 +7,9 @@ detected anomalies against incident truth time windows.
 Usage:
     python -m benchmarks.detection_rate
 """
+
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -16,6 +17,9 @@ from backend.app.db.session import SyncSessionLocal
 from backend.app.models.anomalies import Anomaly, AnomalyDetector
 from backend.app.models.metrics import MetricWindow
 from backend.app.models.truth import IncidentTruth
+from backend.app.services.detection import IF_WINDOW_SIZE_SECONDS
+from backend.app.services.evaluation import window_matches_truth
+from benchmarks.contracts import require
 from benchmarks.ingestion_throughput import save_results
 
 
@@ -27,25 +31,36 @@ def run_benchmark() -> dict:
     try:
         # Load truth windows
         truth_rows = session.execute(select(IncidentTruth)).scalars().all()
-        incident_windows = [
-            (t.start_time, t.end_time) for t in truth_rows if t.start_time and t.end_time
-        ]
-        print(f"Truth incident windows: {len(incident_windows)}")
+        require(len(truth_rows) >= 5, "at least five truth incidents are required")
+        print(f"Truth incidents: {len(truth_rows)}")
 
         # Classify each metric window as incident or normal
         windows = (
-            session.execute(select(MetricWindow).where(MetricWindow.closed_at.isnot(None)))
+            session.execute(
+                select(MetricWindow).where(
+                    MetricWindow.closed_at.isnot(None),
+                    MetricWindow.window_size_seconds == IF_WINDOW_SIZE_SECONDS,
+                )
+            )
             .scalars()
             .all()
         )
 
         print(f"Total metric windows: {len(windows)}")
+        require(len(windows) >= 100, "at least 100 closed metric windows are required")
 
         results = {}
         for detector in [AnomalyDetector.MAD, AnomalyDetector.ISOLATION_FOREST]:
             # Get anomalies for this detector
             anomalies = (
-                session.execute(select(Anomaly).where(Anomaly.detector == detector)).scalars().all()
+                session.execute(
+                    select(Anomaly).where(
+                        Anomaly.detector == detector,
+                        Anomaly.window_size_seconds == IF_WINDOW_SIZE_SECONDS,
+                    )
+                )
+                .scalars()
+                .all()
             )
 
             anom_windows = set()
@@ -55,21 +70,24 @@ def run_benchmark() -> dict:
             tp = 0  # Anomaly detected during incident
             fp = 0  # Anomaly detected during normal period
             fn = 0  # No anomaly detected during incident
+            tn = 0  # No anomaly detected during normal period
 
             for mw in windows:
-                window_end = mw.window_start + timedelta(seconds=mw.window_size_seconds)
                 is_anomalous = (
                     mw.service_id,
                     mw.window_start,
                     mw.window_size_seconds,
                 ) in anom_windows
 
-                # Check if in incident window
-                in_incident = False
-                for istart, iend in incident_windows:
-                    if mw.window_start < iend and window_end > istart:
-                        in_incident = True
-                        break
+                in_incident = any(
+                    window_matches_truth(
+                        service_id=mw.service_id,
+                        window_start=mw.window_start,
+                        window_size_seconds=mw.window_size_seconds,
+                        truth=truth,
+                    )
+                    for truth in truth_rows
+                )
 
                 if in_incident:
                     if is_anomalous:
@@ -79,9 +97,14 @@ def run_benchmark() -> dict:
                 else:
                     if is_anomalous:
                         fp += 1
+                    else:
+                        tn += 1
 
             total_incident_windows = tp + fn
-            total_normal_windows = fp + (len(windows) - tp - fn - fp)
+            total_normal_windows = fp + tn
+            require(total_incident_windows > 0, "no positive service-aware windows were found")
+            require(total_normal_windows > 0, "no normal windows were found")
+            require(len(anomalies) > 0, f"{detector.value} produced no anomalies")
 
             tpr = tp / total_incident_windows if total_incident_windows > 0 else 0
             fpr = fp / total_normal_windows if total_normal_windows > 0 else 0
@@ -90,6 +113,7 @@ def run_benchmark() -> dict:
                 "tp": tp,
                 "fp": fp,
                 "fn": fn,
+                "tn": tn,
                 "tpr": round(tpr, 4),
                 "fpr": round(fpr, 4),
                 "total_anomalies": len(anomalies),
@@ -103,8 +127,9 @@ def run_benchmark() -> dict:
         output = {
             "benchmark": "detection_rate",
             "run_date": run_date,
-            "n_incident_windows": len(incident_windows),
+            "n_truth_incidents": len(truth_rows),
             "n_metric_windows": len(windows),
+            "evaluation_window_size_seconds": IF_WINDOW_SIZE_SECONDS,
             "results": results,
         }
         save_results("detection_rate", output, run_date)

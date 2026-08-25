@@ -7,6 +7,7 @@ Implements two methods:
 
 Both detectors record scores per (service, metric, window) for PR-curve comparison.
 """
+
 import pickle
 import uuid
 from pathlib import Path
@@ -31,6 +32,7 @@ settings = get_settings()
 
 MAD_SCALE = 0.6745  # Scale MAD to be comparable to standard deviation
 DEFAULT_THRESHOLD = settings.mad_threshold_default  # 4.0
+IF_WINDOW_SIZE_SECONDS = 300
 
 
 def compute_mad_zscore(observed: float, median: float, mad: float) -> Optional[float]:
@@ -165,6 +167,12 @@ def detect_isolation_forest(
     anomalies: list[dict] = []
     mw = metric_window
 
+    # Models are trained on five-minute feature vectors. Scoring one-minute
+    # windows with that model is a distribution mismatch that creates a flood
+    # of false positives.
+    if mw.window_size_seconds != IF_WINDOW_SIZE_SECONDS:
+        return anomalies
+
     if_model = if_models.get(mw.service_id)
     if if_model is None:
         return anomalies
@@ -209,49 +217,22 @@ def detect_isolation_forest(
     else:
         severity = "MEDIUM"
 
-    # Record an anomaly for each metric type (for comparison)
-    metrics_to_check = [
-        (
-            "request_count",
-            mw.request_count,
-            mw.baseline_request_count_median,
-            mw.baseline_request_count_mad,
-        ),
-        (
-            "error_rate",
-            float(mw.error_rate) if mw.error_rate is not None else None,
-            mw.baseline_error_rate_median,
-            mw.baseline_error_rate_mad,
-        ),
-        (
-            "p95_latency_ms",
-            mw.p95_latency_ms,
-            mw.baseline_p95_latency_median,
-            mw.baseline_p95_latency_mad,
-        ),
-    ]
-
-    for metric_name, observed, median, mad in metrics_to_check:
-        if observed is None or median is None or mad is None or mad == 0:
-            continue
-
-        z_score = compute_mad_zscore(observed, median, mad)
-        if z_score is None:
-            z_score = anomaly_score  # fallback
-
-        anomalies.append(
-            {
-                "service_id": mw.service_id,
-                "metric": metric_name,
-                "window_start": mw.window_start,
-                "window_size_seconds": mw.window_size_seconds,
-                "detector": AnomalyDetector.ISOLATION_FOREST.value,
-                "score": round(anomaly_score, 4),
-                "observed_value": round(float(observed), 4),
-                "baseline_value": round(float(median), 4),
-                "severity": severity,
-            }
-        )
+    # Isolation Forest scores the joint feature vector; recording the same
+    # score as three independent metric anomalies overstates evidence and
+    # distorts PR curves. Persist one truthful multivariate observation.
+    anomalies.append(
+        {
+            "service_id": mw.service_id,
+            "metric": "multivariate",
+            "window_start": mw.window_start,
+            "window_size_seconds": mw.window_size_seconds,
+            "detector": AnomalyDetector.ISOLATION_FOREST.value,
+            "score": round(anomaly_score, 4),
+            "observed_value": round(anomaly_score, 4),
+            "baseline_value": 0.0,
+            "severity": severity,
+        }
+    )
 
     return anomalies
 

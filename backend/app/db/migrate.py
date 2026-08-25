@@ -3,11 +3,13 @@ Alembic migration helper.
 
 Provides run_migrations() to apply all pending migrations at startup.
 """
+
 import sys
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
+
+from alembic import command
 
 
 def get_alembic_config() -> Config:

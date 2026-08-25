@@ -5,6 +5,7 @@ For SQLite (local): patches Postgres-specific types (UUID, ARRAY, JSONB)
 into SQLite-compatible TypeDecorators at module import time.
 For Postgres (CI via DATABASE_URL env): uses native types.
 """
+
 import json
 import os
 import uuid
@@ -75,9 +76,7 @@ if _IS_SQLITE:
         def process_bind_param(self, value, dialect):
             if value is None:
                 return None
-            return json.dumps(
-                [str(v) if isinstance(v, uuid.UUID) else v for v in (value or [])]
-            )
+            return json.dumps([str(v) if isinstance(v, uuid.UUID) else v for v in (value or [])])
 
         def process_result_value(self, value, dialect):
             if value is None:

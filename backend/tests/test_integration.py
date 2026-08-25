@@ -3,6 +3,7 @@ Integration test: generate -> ingest -> aggregate -> detect -> alert -> dedupe -
 
 Tests the full pipeline end-to-end with synthetic data.
 """
+
 import uuid
 from datetime import datetime
 

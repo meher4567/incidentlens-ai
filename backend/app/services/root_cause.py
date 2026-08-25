@@ -15,6 +15,7 @@ Features (per service per incident):
 Model: LogisticRegression with class_weight='balanced'
 Persists score, rank, feature_vector, and feature_contributions.
 """
+
 import pickle
 import uuid
 from datetime import datetime, timezone
@@ -28,9 +29,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import get_settings
-from backend.app.models.alerts import Alert, DeduplicatedAlert
+from backend.app.models.alerts import Alert
 from backend.app.models.anomalies import Anomaly, AnomalyDetector
 from backend.app.models.incidents import Incident, IncidentAlert, IncidentRootCauseScore
+from backend.app.models.ml_meta import ModelVersion
 from backend.app.models.services import ServiceDependency
 
 settings = get_settings()
@@ -75,11 +77,15 @@ def _get_downstream_services(G: nx.DiGraph, service_id: uuid.UUID) -> set[uuid.U
     return downstream
 
 
-def _get_canonical_alerts_for_incident(
+def _get_alerts_for_incident(
     session: Session,
     incident_id: uuid.UUID,
 ) -> list[Alert]:
-    """Get canonical (non-duplicate) alerts attached to an incident."""
+    """Get all alert evidence attached to an incident.
+
+    Deduplication controls notification noise; it must not discard the service
+    and metric evidence the RCA ranker needs.
+    """
     alert_links = (
         session.execute(select(IncidentAlert).where(IncidentAlert.incident_id == incident_id))
         .scalars()
@@ -89,13 +95,8 @@ def _get_canonical_alerts_for_incident(
         return []
 
     alert_ids = [a.alert_id for a in alert_links]
-    dup_ids = session.execute(select(DeduplicatedAlert.duplicate_alert_id)).scalars().all()
-    dup_set = set(dup_ids)
-
     alerts = session.execute(select(Alert).where(Alert.id.in_(alert_ids))).scalars().all()
-
-    # Return only canonical alerts
-    return [a for a in alerts if a.id not in dup_set]
+    return list(alerts)
 
 
 def extract_features(
@@ -110,7 +111,7 @@ def extract_features(
     features: dict[str, float] = {}
 
     # Get all alerts in incident
-    all_alerts = _get_canonical_alerts_for_incident(session, incident.id)
+    all_alerts = _get_alerts_for_incident(session, incident.id)
     if not all_alerts:
         return {name: 0.0 for name in FEATURE_NAMES}
 
@@ -189,8 +190,10 @@ def train_ranker(
             y.append(1 if service_id == true_root else 0)
 
     if len(X) < 10 or sum(y) < 3:
-        # Not enough data: return untrained model
-        return LogisticRegression(class_weight="balanced", solver="lbfgs")
+        raise ValueError(
+            "RCA training requires at least 10 service candidates and 3 positive roots; "
+            f"received {len(X)} candidates and {sum(y)} positives"
+        )
 
     X_arr = np.array(X)
     y_arr = np.array(y)
@@ -218,13 +221,24 @@ def train_ranker(
     return model
 
 
-def load_model() -> Optional[LogisticRegression | dict]:
+def load_model(session: Session | None = None) -> Optional[LogisticRegression | dict]:
     """
     Load trained RCA ranker model.
     Handles both raw model and dict-with-metadata formats.
     """
     if not MODEL_PATH.exists():
         return None
+    if session is not None:
+        registered = session.execute(
+            select(ModelVersion.id)
+            .where(
+                ModelVersion.model_type == "rca_ranker",
+                ModelVersion.file_path == str(MODEL_PATH),
+            )
+            .limit(1)
+        ).first()
+        if registered is None:
+            return None
     with open(MODEL_PATH, "rb") as f:
         data = pickle.load(f)
     if isinstance(data, dict):
@@ -286,7 +300,7 @@ def run_rca_on_closed_incidents(session: Session) -> int:
     Run RCA ranking on all closed-but-not-scored incidents.
     Returns number of incidents scored.
     """
-    model_data = load_model()
+    model_data = load_model(session)
     if model_data is None:
         return 0
 

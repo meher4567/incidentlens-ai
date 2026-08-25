@@ -4,6 +4,7 @@ Deduplication compression benchmark: % of raw alerts suppressed in cascade incid
 Usage:
     python -m benchmarks.dedup_compression
 """
+
 import argparse
 from datetime import datetime, timezone
 
@@ -11,6 +12,7 @@ from sqlalchemy import func, select
 
 from backend.app.db.session import SyncSessionLocal
 from backend.app.models.alerts import Alert, DeduplicatedAlert
+from benchmarks.contracts import require
 from benchmarks.ingestion_throughput import save_results
 
 
@@ -21,6 +23,7 @@ def run_benchmark() -> dict:
     session = SyncSessionLocal()
     try:
         total_alerts = session.execute(select(func.count(Alert.id))).scalar() or 0
+        require(total_alerts > 0, "deduplication benchmark requires at least one alert")
 
         # Count deduplicated (suppressed) alerts
         suppressed = (

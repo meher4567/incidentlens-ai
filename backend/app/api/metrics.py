@@ -13,6 +13,8 @@ from backend.app.models.metrics import MetricWindow
 from backend.app.models.services import Service
 from backend.app.models.truth import IncidentTruth
 from backend.app.schemas.metrics import MetricWindowResponse, ServiceHealthResponse
+from backend.app.services.detection import IF_WINDOW_SIZE_SECONDS
+from backend.app.services.evaluation import window_matches_truth
 
 router = APIRouter()
 
@@ -23,7 +25,7 @@ DETECTOR_RESPONSE_KEYS = {
 
 
 @router.get("/services/{service_id}/health", response_model=ServiceHealthResponse)
-async def get_service_health(
+def get_service_health(
     service_id: uuid.UUID,
     window_size_seconds: int = Query(default=60, ge=60, le=300),
     start_time: datetime | None = Query(None),
@@ -56,8 +58,8 @@ async def get_service_health(
     )
 
 
-@router.get("/")
-async def get_metrics_overview(
+@router.get("")
+def get_metrics_overview(
     session: Session = Depends(get_sync_session),
 ):
     """Get system-wide overview metrics."""
@@ -116,22 +118,23 @@ async def get_metrics_overview(
 
 
 @router.get("/pr-curves")
-async def get_pr_curves(
+def get_pr_curves(
     session: Session = Depends(get_sync_session),
 ):
     """Get PR curve data for MAD vs Isolation Forest comparison."""
     truth_rows = session.execute(select(IncidentTruth)).scalars().all()
-    incident_windows = [
-        (t.start_time, t.end_time) for t in truth_rows if t.start_time and t.end_time
-    ]
-
     result: dict[str, list[dict[str, float]]] = {}
 
     for detector in [AnomalyDetector.MAD, AnomalyDetector.ISOLATION_FOREST]:
         detector_key = DETECTOR_RESPONSE_KEYS[detector]
         anomalies = (
             session.execute(
-                select(Anomaly).where(Anomaly.detector == detector).order_by(Anomaly.score.desc())
+                select(Anomaly)
+                .where(
+                    Anomaly.detector == detector,
+                    Anomaly.window_size_seconds == IF_WINDOW_SIZE_SECONDS,
+                )
+                .order_by(Anomaly.score.desc())
             )
             .scalars()
             .all()
@@ -141,12 +144,15 @@ async def get_pr_curves(
         scores = []
         labels = []
         for a in anomalies:
-            window_end = a.window_start + timedelta(seconds=a.window_size_seconds)
-            in_incident = False
-            for istart, iend in incident_windows:
-                if a.window_start < iend and window_end > istart:
-                    in_incident = True
-                    break
+            in_incident = any(
+                window_matches_truth(
+                    service_id=a.service_id,
+                    window_start=a.window_start,
+                    window_size_seconds=a.window_size_seconds,
+                    truth=truth,
+                )
+                for truth in truth_rows
+            )
             scores.append(float(a.score))
             labels.append(1 if in_incident else 0)
 
@@ -172,21 +178,41 @@ async def get_pr_curves(
     for detector in [AnomalyDetector.MAD, AnomalyDetector.ISOLATION_FOREST]:
         detector_key = DETECTOR_RESPONSE_KEYS[detector]
         anomalies = (
-            session.execute(select(Anomaly).where(Anomaly.detector == detector)).scalars().all()
+            session.execute(
+                select(Anomaly).where(
+                    Anomaly.detector == detector,
+                    Anomaly.window_size_seconds == IF_WINDOW_SIZE_SECONDS,
+                )
+            )
+            .scalars()
+            .all()
         )
         if anomalies:
             anom_set = set()
             for a in anomalies:
                 anom_set.add((a.service_id, a.window_start, a.window_size_seconds))
             tp = fp = fn = 0
-            windows = session.execute(select(MetricWindow)).scalars().all()
+            windows = (
+                session.execute(
+                    select(MetricWindow).where(
+                        MetricWindow.closed_at.isnot(None),
+                        MetricWindow.window_size_seconds == IF_WINDOW_SIZE_SECONDS,
+                    )
+                )
+                .scalars()
+                .all()
+            )
             for mw in windows:
-                window_end = mw.window_start + timedelta(seconds=mw.window_size_seconds)
                 key = (mw.service_id, mw.window_start, mw.window_size_seconds)
                 is_anom = key in anom_set
                 in_inc = any(
-                    mw.window_start < iend and window_end > istart
-                    for istart, iend in incident_windows
+                    window_matches_truth(
+                        service_id=mw.service_id,
+                        window_start=mw.window_start,
+                        window_size_seconds=mw.window_size_seconds,
+                        truth=truth,
+                    )
+                    for truth in truth_rows
                 )
                 if in_inc:
                     if is_anom:

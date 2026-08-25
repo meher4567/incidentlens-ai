@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.db.session import Base
+from backend.app.models.compat import CompatBigInteger
 
 
 class MetricWindow(Base):
@@ -18,7 +19,7 @@ class MetricWindow(Base):
         Index("ix_metric_windows_start_size", "window_start", "window_size_seconds"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(CompatBigInteger(), primary_key=True, autoincrement=True)
     service_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("services.id"), nullable=False
     )

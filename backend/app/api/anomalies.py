@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,10 +12,10 @@ router = APIRouter()
 
 
 @router.get("", response_model=list[AnomalyResponse])
-async def list_anomalies(
-    service_id: str | None = Query(None),
+def list_anomalies(
+    service_id: uuid.UUID | None = Query(None),
     metric: str | None = Query(None),
-    detector: str | None = Query(None),
+    detector: str | None = Query(None, pattern="^(MAD|ISOLATION_FOREST)$"),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_sync_session),

@@ -8,11 +8,12 @@ Clusters canonical alerts into incidents using:
 Closes incidents after 10 minutes with no new alert.
 If multiple candidate incidents match, merges into oldest.
 """
+
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import networkx as nx
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import get_settings
@@ -24,18 +25,44 @@ settings = get_settings()
 
 PROXIMITY_MINUTES = settings.incident_proximity_minutes  # 5
 CLOSE_MINUTES = settings.incident_close_minutes  # 10
+MAX_DURATION_MINUTES = settings.incident_max_duration_minutes  # 15
 
 
-def _get_canonical_alerts(session: Session) -> list[Alert]:
-    """Get alerts that are not marked as duplicates."""
-    dup_ids = session.execute(select(DeduplicatedAlert.duplicate_alert_id)).scalars().all()
-    dup_set = set(dup_ids)
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
-    stmt = select(Alert).order_by(Alert.start_window.asc())
-    if dup_set:
-        stmt = stmt.where(~Alert.id.in_(dup_set))
 
-    return list(session.execute(stmt).scalars().all())
+def _severity_value(value: object) -> str:
+    """Return the stored severity value for an enum or string."""
+    return str(getattr(value, "value", value))
+
+
+def _get_alert_groups(session: Session) -> list[list[Alert]]:
+    """Return each canonical alert together with its suppressed evidence."""
+    all_alerts = list(
+        session.execute(select(Alert).order_by(Alert.start_window.asc(), Alert.id.asc()))
+        .scalars()
+        .all()
+    )
+    alerts_by_id = {alert.id: alert for alert in all_alerts}
+    dedup_rows = session.execute(select(DeduplicatedAlert)).scalars().all()
+    duplicate_ids = {row.duplicate_alert_id for row in dedup_rows}
+    duplicates_by_canonical: dict[uuid.UUID, list[Alert]] = {}
+    for row in dedup_rows:
+        duplicate = alerts_by_id.get(row.duplicate_alert_id)
+        if duplicate is not None:
+            duplicates_by_canonical.setdefault(row.canonical_alert_id, []).append(duplicate)
+
+    groups: list[list[Alert]] = []
+    for canonical in all_alerts:
+        if canonical.id in duplicate_ids:
+            continue
+        duplicates = duplicates_by_canonical.get(canonical.id, [])
+        duplicates.sort(key=lambda row: (row.start_window, str(row.id)))
+        groups.append([canonical, *duplicates])
+    return groups
 
 
 def _build_dep_graph(session: Session) -> nx.DiGraph:
@@ -76,7 +103,7 @@ def cluster_alerts(session: Session) -> int:
     Returns number of incidents created/updated.
     """
     G = _build_dep_graph(session)
-    canonical_alerts = _get_canonical_alerts(session)
+    alert_groups = _get_alert_groups(session)
 
     # Get existing open incidents
     open_incidents = list(
@@ -96,7 +123,8 @@ def cluster_alerts(session: Session) -> int:
     incidents_created = 0
     now = datetime.now(timezone.utc)
 
-    for alert in canonical_alerts:
+    for alert_group in alert_groups:
+        alert = alert_group[0]
         if alert.id in attached_alert_ids:
             continue
 
@@ -112,26 +140,27 @@ def cluster_alerts(session: Session) -> int:
             time_proximate = (
                 alert.start_window <= latest_alert_time + proximity_window
                 and alert.start_window >= inc.start_time - proximity_window
+                and alert.end_window <= inc.start_time + timedelta(minutes=MAX_DURATION_MINUTES)
             )
 
             if not time_proximate:
                 continue
 
             # Graph adjacency check
-            if _is_connected_to_incident(G, alert, inc):
+            if any(_is_connected_to_incident(G, member, inc) for member in alert_group):
                 candidates.append(inc)
 
         if len(candidates) == 1:
             # Attach to single candidate
             inc = candidates[0]
-            _attach_alert_to_incident(session, inc, alert)
+            _attach_alert_group_to_incident(session, inc, alert_group)
         elif len(candidates) > 1:
             # Merge into oldest, attach alert
             oldest = min(candidates, key=lambda i: i.start_time)
             for other in candidates:
                 if other.id != oldest.id:
                     _merge_incidents(session, oldest, other)
-            _attach_alert_to_incident(session, oldest, alert)
+            _attach_alert_group_to_incident(session, oldest, alert_group)
             # Refresh open incidents after merge
             open_incidents = list(
                 session.execute(select(Incident).where(Incident.closed_at.is_(None)))
@@ -142,12 +171,12 @@ def cluster_alerts(session: Session) -> int:
             # Create new incident
             inc = Incident(
                 start_time=alert.start_window,
-                severity=str(alert.severity),
+                severity=_severity_value(alert.severity),
                 affected_services=[alert.service_id],
             )
             session.add(inc)
             session.flush()
-            _attach_alert_to_incident(session, inc, alert)
+            _attach_alert_group_to_incident(session, inc, alert_group)
             open_incidents.append(inc)
             incidents_created += 1
 
@@ -156,29 +185,35 @@ def cluster_alerts(session: Session) -> int:
     for inc in open_incidents:
         if inc.closed_at is not None:
             continue
-        # Find latest alert in incident
-        latest = session.execute(
-            select(func.max(IncidentAlert.attached_at)).where(IncidentAlert.incident_id == inc.id)
-        ).scalar()
-
-        if latest and latest < close_cutoff:
-            inc.closed_at = now
-            # Set end_time to last alert's end_window
-            last_alert = (
-                session.execute(
-                    select(Alert)
-                    .join(IncidentAlert, IncidentAlert.alert_id == Alert.id)
-                    .where(IncidentAlert.incident_id == inc.id)
-                    .order_by(Alert.end_window.desc())
-                )
-                .scalars()
-                .first()
+        # Event time, rather than row attachment time, makes historical replay
+        # obey the same lifecycle semantics as live processing.
+        last_alert = (
+            session.execute(
+                select(Alert)
+                .join(IncidentAlert, IncidentAlert.alert_id == Alert.id)
+                .where(IncidentAlert.incident_id == inc.id)
+                .order_by(Alert.end_window.desc())
             )
-            if last_alert:
-                inc.end_time = last_alert.end_window
+            .scalars()
+            .first()
+        )
+
+        if last_alert and _as_utc(last_alert.end_window) < close_cutoff:
+            inc.closed_at = now
+            inc.end_time = last_alert.end_window
 
     session.commit()
     return incidents_created
+
+
+def _attach_alert_group_to_incident(
+    session: Session,
+    incident: Incident,
+    alerts: list[Alert],
+) -> None:
+    """Attach a canonical alert and all deduplicated evidence to an incident."""
+    for alert in alerts:
+        _attach_alert_to_incident(session, incident, alert)
 
 
 def _attach_alert_to_incident(
@@ -201,7 +236,7 @@ def _attach_alert_to_incident(
     # Update severity to max
     severities = ["MEDIUM", "HIGH", "CRITICAL"]
     inc_sev_idx = severities.index(incident.severity) if incident.severity in severities else 0
-    alert_severity = str(alert.severity)
+    alert_severity = _severity_value(alert.severity)
     alert_sev_idx = severities.index(alert_severity) if alert_severity in severities else 0
     if alert_sev_idx > inc_sev_idx:
         incident.severity = alert_severity

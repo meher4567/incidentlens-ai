@@ -1,8 +1,10 @@
 """Tests for aggregation, detection, alerting, dedup, and clustering services."""
+
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from backend.app.models.alerts import Alert
+from backend.app.models.alerts import Alert, DeduplicatedAlert
+from backend.app.models.anomalies import Anomaly, AnomalyDetector
 from backend.app.models.incidents import Incident
 from backend.app.models.logs import LogLevel, RawLog
 
@@ -63,6 +65,33 @@ class TestAnomalyTypeMapping:
         from backend.app.services.alerting import _derive_anomaly_type
 
         assert _derive_anomaly_type("p95_latency_ms", 4.5) == "latency_spike"
+
+
+class TestAlertBatching:
+    def test_debounce_sees_new_alerts_with_autoflush_disabled(self, db_session, seed_services):
+        from backend.app.services.alerting import process_new_anomalies
+
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for minute in range(3):
+            db_session.add(
+                Anomaly(
+                    service_id=seed_services["payment-service"].id,
+                    metric="p95_latency_ms",
+                    window_start=t0 + timedelta(minutes=minute),
+                    window_size_seconds=60,
+                    detector=AnomalyDetector.MAD,
+                    score=5.0,
+                    observed_value=500.0,
+                    baseline_value=100.0,
+                    severity="HIGH",
+                )
+            )
+        db_session.commit()
+
+        assert process_new_anomalies(db_session) == 3
+        alerts = db_session.query(Alert).all()
+        assert len(alerts) == 1
+        assert len(alerts[0].anomaly_ids) == 3
 
 
 class TestMetricWindowAggregation:
@@ -170,6 +199,29 @@ class TestDeduplication:
         assert len(duplicates) == 1
         assert duplicates[0].id == alert1.id
 
+    def test_connected_component_is_idempotent(self, db_session, seed_services):
+        from backend.app.services.deduplication import deduplicate_alerts
+
+        t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for minute in (0, 4, 8):
+            db_session.add(
+                Alert(
+                    service_id=seed_services["payment-service"].id,
+                    anomaly_type="latency_spike",
+                    start_window=t0 + timedelta(minutes=minute),
+                    end_window=t0 + timedelta(minutes=minute + 1),
+                    severity="HIGH",
+                    observed_value=500.0,
+                    baseline_value=100.0,
+                )
+            )
+        db_session.commit()
+
+        assert deduplicate_alerts(db_session) == 2
+        assert db_session.query(DeduplicatedAlert).count() == 2
+        assert deduplicate_alerts(db_session) == 0
+        assert db_session.query(DeduplicatedAlert).count() == 2
+
 
 class TestClustering:
     def test_create_empty_incident(self, db_session, seed_services):
@@ -178,3 +230,47 @@ class TestClustering:
         count = cluster_alerts(db_session)
         # No alerts should create 0 new incidents
         assert count >= 0
+
+    def test_suppressed_alerts_remain_incident_evidence(self, db_session, seed_dependencies):
+        from backend.app.models.incidents import IncidentAlert
+        from backend.app.services.clustering import cluster_alerts
+
+        services = seed_dependencies
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        canonical = Alert(
+            service_id=services["checkout-service"].id,
+            anomaly_type="latency_spike",
+            start_window=start,
+            end_window=start + timedelta(minutes=1),
+            severity="HIGH",
+            observed_value=500,
+            baseline_value=100,
+        )
+        duplicate = Alert(
+            service_id=services["payment-service"].id,
+            anomaly_type="latency_spike",
+            start_window=start,
+            end_window=start + timedelta(minutes=1),
+            severity="CRITICAL",
+            observed_value=900,
+            baseline_value=100,
+        )
+        db_session.add_all([canonical, duplicate])
+        db_session.flush()
+        db_session.add(
+            DeduplicatedAlert(
+                canonical_alert_id=canonical.id,
+                duplicate_alert_id=duplicate.id,
+                dedupe_reason="shared_trace_id",
+            )
+        )
+        db_session.commit()
+
+        assert cluster_alerts(db_session) == 1
+        incident = db_session.query(Incident).one()
+        assert set(incident.affected_services) == {
+            services["checkout-service"].id,
+            services["payment-service"].id,
+        }
+        assert incident.severity == "CRITICAL"
+        assert db_session.query(IncidentAlert).count() == 2

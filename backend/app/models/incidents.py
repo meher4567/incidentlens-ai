@@ -11,7 +11,11 @@ from backend.app.db.session import Base
 
 class Incident(Base):
     __tablename__ = "incidents"
-    __table_args__ = (Index("ix_incidents_time_range", "start_time", "end_time"),)
+    __table_args__ = (
+        Index("ix_incidents_time_range", "start_time", "end_time"),
+        Index("ix_incidents_created_at", "created_at"),
+        Index("ix_incidents_closed_at", "closed_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

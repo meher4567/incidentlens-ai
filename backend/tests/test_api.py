@@ -1,4 +1,5 @@
 """API contract tests for endpoints used by the dashboard."""
+
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -31,10 +32,7 @@ def test_list_dependencies_returns_upstream_and_downstream_names(api_client, see
     response = api_client.get("/api/services/dependencies")
 
     assert response.status_code == 200
-    edges = {
-        (row["upstream_name"], row["downstream_name"])
-        for row in response.json()
-    }
+    edges = {(row["upstream_name"], row["downstream_name"]) for row in response.json()}
     assert ("api-gateway", "auth-service") in edges
     assert ("checkout-service", "payment-service") in edges
 

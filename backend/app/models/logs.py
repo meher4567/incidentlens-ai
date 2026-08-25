@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.db.session import Base
+from backend.app.models.compat import CompatBigInteger
 
 
 class LogLevel(str, PyEnum):
@@ -24,9 +25,10 @@ class RawLog(Base):
     __table_args__ = (
         Index("ix_raw_logs_service_timestamp", "service_id", "timestamp"),
         Index("ix_raw_logs_trace_id", "trace_id"),
+        Index("ix_raw_logs_ingested_at", "ingested_at"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(CompatBigInteger(), primary_key=True, autoincrement=True)
     service_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("services.id"), nullable=False
     )

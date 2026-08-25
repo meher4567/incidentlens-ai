@@ -27,3 +27,11 @@ testpaths = ["backend/tests"]
 asyncio_mode = "auto"
 pythonpath = ["."]
 addopts = "-v --tb=short"
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false

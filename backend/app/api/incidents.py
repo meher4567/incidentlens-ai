@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.app.db.session import get_sync_session
@@ -79,36 +79,7 @@ def _build_incident_detail(session: Session, incident_id: uuid.UUID) -> Incident
     alert_ids = [a.alert_id for a in alert_links]
 
     alerts: list[IncidentAlertPayload] = []
-    service_name_map: dict[uuid.UUID, str] = {}
-    for service_id in incident.affected_services:
-        if service_id not in service_name_map:
-            service_name = session.execute(
-                select(Service.name).where(Service.id == service_id)
-            ).scalar_one_or_none()
-            service_name_map[service_id] = service_name or str(service_id)
-
-    if alert_ids:
-        alerts_objs = session.execute(select(Alert).where(Alert.id.in_(alert_ids))).scalars().all()
-        for a in alerts_objs:
-            if a.service_id not in service_name_map:
-                svc = session.execute(
-                    select(Service.name).where(Service.id == a.service_id)
-                ).scalar_one_or_none()
-                service_name_map[a.service_id] = svc or str(a.service_id)
-            alerts.append(
-                {
-                    "id": a.id,
-                    "service_id": a.service_id,
-                    "service_name": service_name_map[a.service_id],
-                    "anomaly_type": a.anomaly_type,
-                    "start_window": a.start_window,
-                    "end_window": a.end_window,
-                    "severity": str(a.severity),
-                    "observed_value": float(a.observed_value),
-                    "baseline_value": float(a.baseline_value),
-                }
-            )
-
+    relevant_service_ids = set(incident.affected_services)
     scores = (
         session.execute(
             select(IncidentRootCauseScore)
@@ -118,18 +89,40 @@ def _build_incident_detail(session: Session, incident_id: uuid.UUID) -> Incident
         .scalars()
         .all()
     )
+    relevant_service_ids.update(score.service_id for score in scores)
+
+    if alert_ids:
+        alerts_objs = session.execute(select(Alert).where(Alert.id.in_(alert_ids))).scalars().all()
+        for a in alerts_objs:
+            relevant_service_ids.add(a.service_id)
+
+    service_rows = session.execute(
+        select(Service.id, Service.name).where(Service.id.in_(relevant_service_ids))
+    ).all()
+    service_name_map = {service_id: name for service_id, name in service_rows}
+
+    if alert_ids:
+        for a in alerts_objs:
+            alerts.append(
+                {
+                    "id": a.id,
+                    "service_id": a.service_id,
+                    "service_name": service_name_map.get(a.service_id, str(a.service_id)),
+                    "anomaly_type": a.anomaly_type,
+                    "start_window": a.start_window,
+                    "end_window": a.end_window,
+                    "severity": str(a.severity),
+                    "observed_value": float(a.observed_value),
+                    "baseline_value": float(a.baseline_value),
+                }
+            )
 
     root_cause_scores = []
     for sc in scores:
-        if sc.service_id not in service_name_map:
-            svc = session.execute(
-                select(Service.name).where(Service.id == sc.service_id)
-            ).scalar_one_or_none()
-            service_name_map[sc.service_id] = svc or str(sc.service_id)
         root_cause_scores.append(
             RootCauseScoreResponse(
                 service_id=sc.service_id,
-                service_name=service_name_map[sc.service_id],
+                service_name=service_name_map.get(sc.service_id, str(sc.service_id)),
                 score=sc.score,
                 rank=sc.rank,
                 feature_vector=sc.feature_vector,
@@ -276,8 +269,8 @@ def _build_incident_briefing(detail: IncidentDetailResponse) -> IncidentBriefing
 
 
 @router.get("", response_model=list[IncidentResponse])
-async def list_incidents(
-    severity: str | None = Query(None),
+def list_incidents(
+    severity: str | None = Query(None, pattern="^(MEDIUM|HIGH|CRITICAL)$"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_sync_session),
@@ -290,24 +283,22 @@ async def list_incidents(
     stmt = stmt.order_by(Incident.created_at.desc()).offset(offset).limit(limit)
     incidents = session.execute(stmt).scalars().all()
 
-    # Enrich with service names and alert counts
+    # Enrich in set-based queries to avoid one query per incident/service.
     result: list[IncidentResponse] = []
-    service_name_map: dict[uuid.UUID, str] = {}
+    incident_ids = [incident.id for incident in incidents]
+    service_ids = {sid for incident in incidents for sid in incident.affected_services}
+    service_rows = session.execute(
+        select(Service.id, Service.name).where(Service.id.in_(service_ids))
+    ).all()
+    service_name_map = {service_id: name for service_id, name in service_rows}
+    alert_count_rows = session.execute(
+        select(IncidentAlert.incident_id, func.count(IncidentAlert.alert_id))
+        .where(IncidentAlert.incident_id.in_(incident_ids))
+        .group_by(IncidentAlert.incident_id)
+    ).all()
+    alert_counts = {incident_id: count for incident_id, count in alert_count_rows}
+
     for inc in incidents:
-        # Resolve service names
-        for sid in inc.affected_services:
-            if sid not in service_name_map:
-                svc = session.execute(
-                    select(Service.name).where(Service.id == sid)
-                ).scalar_one_or_none()
-                service_name_map[sid] = svc or str(sid)
-
-        # Count attached alerts
-        alert_count = session.execute(
-            select(IncidentAlert).where(IncidentAlert.incident_id == inc.id)
-        ).fetchall()
-        count = len(alert_count)
-
         result.append(
             IncidentResponse(
                 id=inc.id,
@@ -315,8 +306,11 @@ async def list_incidents(
                 end_time=inc.end_time,
                 severity=inc.severity,
                 affected_services=inc.affected_services,
-                affected_service_names=[service_name_map[s] for s in inc.affected_services],
-                alert_count=count,
+                affected_service_names=[
+                    service_name_map.get(service_id, str(service_id))
+                    for service_id in inc.affected_services
+                ],
+                alert_count=alert_counts.get(inc.id, 0),
                 closed_at=inc.closed_at,
                 created_at=inc.created_at,
             )
@@ -325,7 +319,7 @@ async def list_incidents(
 
 
 @router.get("/{incident_id}", response_model=IncidentDetailResponse)
-async def get_incident(
+def get_incident(
     incident_id: uuid.UUID,
     session: Session = Depends(get_sync_session),
 ):
@@ -334,7 +328,7 @@ async def get_incident(
 
 
 @router.get("/{incident_id}/briefing", response_model=IncidentBriefingResponse)
-async def get_incident_briefing(
+def get_incident_briefing(
     incident_id: uuid.UUID,
     session: Session = Depends(get_sync_session),
 ):

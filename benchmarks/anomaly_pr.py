@@ -7,8 +7,9 @@ as ground truth for anomalous vs normal windows.
 Usage:
     python -m benchmarks.anomaly_pr
 """
+
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -16,6 +17,9 @@ from backend.app.db.session import SyncSessionLocal
 from backend.app.models.anomalies import Anomaly, AnomalyDetector
 from backend.app.models.metrics import MetricWindow
 from backend.app.models.truth import IncidentTruth
+from backend.app.services.detection import IF_WINDOW_SIZE_SECONDS
+from backend.app.services.evaluation import window_matches_truth
+from benchmarks.contracts import require
 from benchmarks.ingestion_throughput import save_results
 
 DETECTOR_KEYS = {
@@ -32,19 +36,23 @@ def run_benchmark() -> dict:
     try:
         # Load truth windows
         truth_rows = session.execute(select(IncidentTruth)).scalars().all()
-        incident_windows = [
-            (t.start_time, t.end_time) for t in truth_rows if t.start_time and t.end_time
-        ]
-        print(f"Truth incident windows: {len(incident_windows)}")
+        require(len(truth_rows) >= 5, "at least five truth incidents are required")
+        print(f"Truth incidents: {len(truth_rows)}")
 
         # Classify each metric window
         windows = (
-            session.execute(select(MetricWindow).where(MetricWindow.closed_at.isnot(None)))
+            session.execute(
+                select(MetricWindow).where(
+                    MetricWindow.closed_at.isnot(None),
+                    MetricWindow.window_size_seconds == IF_WINDOW_SIZE_SECONDS,
+                )
+            )
             .scalars()
             .all()
         )
 
         print(f"Total metric windows: {len(windows)}")
+        require(len(windows) >= 100, "at least 100 closed metric windows are required")
 
         results = {}
 
@@ -52,18 +60,17 @@ def run_benchmark() -> dict:
             detector_key = DETECTOR_KEYS[detector]
             # Get anomalies with scores
             anomalies = (
-                session.execute(select(Anomaly).where(Anomaly.detector == detector)).scalars().all()
+                session.execute(
+                    select(Anomaly).where(
+                        Anomaly.detector == detector,
+                        Anomaly.window_size_seconds == IF_WINDOW_SIZE_SECONDS,
+                    )
+                )
+                .scalars()
+                .all()
             )
 
-            if not anomalies:
-                results[detector_key] = {
-                    "precision": 0,
-                    "recall": 0,
-                    "f1": 0,
-                    "n_anomalies": 0,
-                    "note": "no anomalies detected",
-                }
-                continue
+            require(len(anomalies) > 0, f"{detector.value} produced no anomalies")
 
             anom_set = set()
             for a in anomalies:
@@ -74,15 +81,18 @@ def run_benchmark() -> dict:
             fn = 0
 
             for mw in windows:
-                window_end = mw.window_start + timedelta(seconds=mw.window_size_seconds)
                 key = (mw.service_id, mw.window_start, mw.window_size_seconds)
                 is_anomalous = key in anom_set
 
-                in_incident = False
-                for istart, iend in incident_windows:
-                    if mw.window_start < iend and window_end > istart:
-                        in_incident = True
-                        break
+                in_incident = any(
+                    window_matches_truth(
+                        service_id=mw.service_id,
+                        window_start=mw.window_start,
+                        window_size_seconds=mw.window_size_seconds,
+                        truth=truth,
+                    )
+                    for truth in truth_rows
+                )
 
                 if in_incident:
                     if is_anomalous:
@@ -118,7 +128,10 @@ def run_benchmark() -> dict:
             detector_anomalies = (
                 session.execute(
                     select(Anomaly)
-                    .where(Anomaly.detector == detector)
+                    .where(
+                        Anomaly.detector == detector,
+                        Anomaly.window_size_seconds == IF_WINDOW_SIZE_SECONDS,
+                    )
                     .order_by(Anomaly.score.desc())
                 )
                 .scalars()
@@ -130,12 +143,15 @@ def run_benchmark() -> dict:
                 scores = []
                 labels = []
                 for a in detector_anomalies:
-                    window_end = a.window_start + timedelta(seconds=a.window_size_seconds)
-                    in_incident = False
-                    for istart, iend in incident_windows:
-                        if a.window_start < iend and window_end > istart:
-                            in_incident = True
-                            break
+                    in_incident = any(
+                        window_matches_truth(
+                            service_id=a.service_id,
+                            window_start=a.window_start,
+                            window_size_seconds=a.window_size_seconds,
+                            truth=truth,
+                        )
+                        for truth in truth_rows
+                    )
                     scores.append(float(a.score))
                     labels.append(1 if in_incident else 0)
 
@@ -158,6 +174,7 @@ def run_benchmark() -> dict:
         metrics = {
             "benchmark": "anomaly_pr",
             "run_date": run_date,
+            "evaluation_window_size_seconds": IF_WINDOW_SIZE_SECONDS,
             "results": results,
             "pr_curve_data": pr_data,
         }

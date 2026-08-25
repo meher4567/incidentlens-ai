@@ -7,6 +7,7 @@ late-arriving logs via UPSERT idempotency.
 
 Uses event time for window assignment. Ingestion time stored separately.
 """
+
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
@@ -58,7 +59,7 @@ def aggregate_service_windows(
     Aggregate raw_logs into metric_windows for a given service and window size.
     Returns list of dicts ready for UPSERT.
     """
-    result = []
+    result: list[dict] = []
 
     # Find the last closed window for this service
     watermark = session.execute(
@@ -89,13 +90,10 @@ def aggregate_service_windows(
     if last_log_time is None:
         return []
 
-    # Only process windows up to the last logged event
-    now = datetime.now(timezone.utc)
-    grace_cutoff = now - timedelta(minutes=GRACE_MINUTES)
-    effective_end = min(
-        floor_dt(last_log_time, window_size_seconds) + timedelta(seconds=window_size_seconds),
-        grace_cutoff,
-    )
+    # Use an event-time watermark. A partially observed final window must not
+    # be labeled as a traffic drop merely because no later event has arrived.
+    event_watermark = _as_utc(last_log_time) - timedelta(minutes=GRACE_MINUTES)
+    effective_end = floor_dt(event_watermark, window_size_seconds)
 
     # Get all logs in windows that are closed (past grace period) but not yet aggregated
     current_window = last_closed
@@ -108,7 +106,13 @@ def aggregate_service_windows(
         metrics = _compute_metrics_for_window(session, service_id, current_window, window_end)
 
         # Compute baselines from previous 30 closed windows
-        baselines = _compute_baselines(session, service_id, current_window, window_size_seconds)
+        baselines = _compute_baselines(
+            session,
+            service_id,
+            current_window,
+            window_size_seconds,
+            pending_windows=result,
+        )
 
         # Merge metrics and baselines
         metrics.update(baselines)
@@ -233,8 +237,11 @@ def _compute_baselines(
     service_id: uuid.UUID,
     window_start: datetime,
     window_size_seconds: int,
+    pending_windows: Sequence[dict] | None = None,
 ) -> dict:
     """Compute rolling median + MAD baselines from previous 30 closed windows."""
+    pending = list(pending_windows or [])[-BASELINE_WINDOWS:]
+    database_limit = max(0, BASELINE_WINDOWS - len(pending))
     prev_windows = (
         session.execute(
             select(MetricWindow)
@@ -244,13 +251,15 @@ def _compute_baselines(
                 MetricWindow.window_start < window_start,
             )
             .order_by(MetricWindow.window_start.desc())
-            .limit(BASELINE_WINDOWS)
+            .limit(database_limit)
         )
         .scalars()
         .all()
+        if database_limit
+        else []
     )
 
-    if len(prev_windows) < 3:
+    if len(prev_windows) + len(pending) < 3:
         # Not enough history for baseline
         return {
             "baseline_request_count_median": None,
@@ -272,9 +281,15 @@ def _compute_baselines(
         mad = max(mad, floor)
         return median, mad
 
-    req_counts = [w.request_count for w in prev_windows]
-    err_rates = [float(w.error_rate) if w.error_rate is not None else None for w in prev_windows]
-    p95_lats = [w.p95_latency_ms for w in prev_windows]
+    req_counts = [w.request_count for w in prev_windows] + [
+        row.get("request_count") for row in pending
+    ]
+    err_rates = [
+        float(w.error_rate) if w.error_rate is not None else None for w in prev_windows
+    ] + [row.get("error_rate") for row in pending]
+    p95_lats = [w.p95_latency_ms for w in prev_windows] + [
+        row.get("p95_latency_ms") for row in pending
+    ]
 
     rc_median, rc_mad = _median_mad(req_counts, settings.mad_floor_request_count)
     er_median, er_mad = _median_mad(err_rates, settings.mad_floor_error_rate)

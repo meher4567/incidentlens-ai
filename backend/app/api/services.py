@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 @router.post("", response_model=ServiceResponse, status_code=201)
-async def create_service(
+def create_service(
     payload: ServiceCreate,
     session: Session = Depends(get_sync_session),
 ):
@@ -38,7 +38,7 @@ async def create_service(
 
 
 @router.get("", response_model=list[ServiceResponse])
-async def list_services(
+def list_services(
     session: Session = Depends(get_sync_session),
 ):
     """List all services."""
@@ -47,7 +47,7 @@ async def list_services(
 
 
 @router.post("/dependencies", status_code=201)
-async def create_dependency(
+def create_dependency(
     payload: DependencyCreate,
     session: Session = Depends(get_sync_session),
 ):
@@ -91,7 +91,7 @@ async def create_dependency(
 
 
 @router.get("/dependencies", response_model=list[DependencyResponse])
-async def list_dependencies(
+def list_dependencies(
     session: Session = Depends(get_sync_session),
 ):
     """List all dependency edges."""
@@ -121,7 +121,7 @@ async def list_dependencies(
 
 
 @router.get("/{service_id}/health", response_model=ServiceHealthResponse)
-async def get_service_health(
+def get_service_health(
     service_id: uuid.UUID,
     window_size_seconds: int = Query(default=60, ge=60, le=300),
     start_time: datetime | None = Query(None),

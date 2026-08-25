@@ -6,51 +6,19 @@ Computes held-out accuracy using ground truth from incident_truth table.
 Usage:
     python -m benchmarks.rca_accuracy
 """
+
 import argparse
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import numpy as np
 from sqlalchemy import select
 
 from backend.app.db.session import SyncSessionLocal
 from backend.app.models.incidents import Incident
-from backend.app.models.truth import IncidentTruth
+from backend.app.services.evaluation import match_incidents_to_truth
 from backend.app.services.root_cause import FEATURE_NAMES, load_model, score_incident
+from benchmarks.contracts import require
 from benchmarks.ingestion_throughput import save_results
-
-
-def match_incidents_to_truth(session) -> dict[uuid.UUID, IncidentTruth]:
-    """Match detected incidents to truth by time overlap."""
-    truth_rows = session.execute(select(IncidentTruth)).scalars().all()
-    incidents = (
-        session.execute(select(Incident).where(Incident.closed_at.isnot(None))).scalars().all()
-    )
-
-    matched: dict[uuid.UUID, IncidentTruth] = {}
-    used_truth: set[uuid.UUID] = set()
-
-    for inc in incidents:
-        if inc.start_time is None or inc.end_time is None:
-            continue
-        best_overlap = timedelta(0)
-        best_truth = None
-        for t in truth_rows:
-            if t.truth_incident_id in used_truth:
-                continue
-            if t.start_time is None or t.end_time is None:
-                continue
-            overlap_start = max(inc.start_time, t.start_time)
-            overlap_end = min(inc.end_time, t.end_time)
-            overlap = overlap_end - overlap_start
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_truth = t
-        if best_truth and best_overlap >= timedelta(seconds=60):
-            matched[inc.id] = best_truth
-            used_truth.add(best_truth.truth_incident_id)
-
-    return matched
 
 
 def run_benchmark() -> dict:
@@ -60,11 +28,9 @@ def run_benchmark() -> dict:
     session = SyncSessionLocal()
     try:
         matched = match_incidents_to_truth(session)
-        model_data = load_model()
+        model_data = load_model(session)
 
-        if model_data is None:
-            print("ERROR: No RCA model found. Run 'python -m backend.scripts.train_rca' first.")
-            return {"error": "no_model"}
+        require(model_data is not None, "no RCA model found; run training first")
 
         if isinstance(model_data, dict):
             model = model_data["model"]
@@ -72,7 +38,6 @@ def run_benchmark() -> dict:
             model = model_data
 
         # Evaluate on all matched incidents
-        held_out_types = {"db_timeout_cascade", "notification_silent_fail"}
         held_out = []
         training = []
 
@@ -82,7 +47,7 @@ def run_benchmark() -> dict:
             ).scalar_one_or_none()
             if inc is None:
                 continue
-            if truth.type in held_out_types:
+            if truth.split == "held_out":
                 held_out.append((inc, truth))
             else:
                 training.append((inc, truth))
@@ -91,17 +56,19 @@ def run_benchmark() -> dict:
             top1 = 0
             top3 = 0
             per_type = {}
+            outcomes = []
 
             for inc, truth in pairs:
-                try:
-                    results = score_incident(session, inc, model)
-                except Exception:
-                    continue
+                results = score_incident(session, inc, model)
 
-                if results and results[0]["service_id"] == truth.root_cause_service_id:
+                top1_is_correct = bool(
+                    results and results[0]["service_id"] == truth.root_cause_service_id
+                )
+                if top1_is_correct:
                     top1 += 1
                 if any(r["service_id"] == truth.root_cause_service_id for r in results[:3]):
                     top3 += 1
+                outcomes.append(1 if top1_is_correct else 0)
 
                 ttype = truth.type
                 if ttype not in per_type:
@@ -122,15 +89,20 @@ def run_benchmark() -> dict:
                     "total": pt["total"],
                 }
 
-            return {
-                f"{label}_n": n,
-                f"{label}_top1_accuracy": round(top1 / n, 4) if n > 0 else 0,
-                f"{label}_top3_accuracy": round(top3 / n, 4) if n > 0 else 0,
-                f"{label}_per_type": result_per_type,
-            }
+            return (
+                {
+                    f"{label}_n": n,
+                    f"{label}_top1_accuracy": round(top1 / n, 4) if n > 0 else 0,
+                    f"{label}_top3_accuracy": round(top3 / n, 4) if n > 0 else 0,
+                    f"{label}_per_type": result_per_type,
+                },
+                outcomes,
+            )
 
-        held_result = evaluate_set(held_out, "held_out")
-        train_result = evaluate_set(training, "training")
+        held_result, held_outcomes = evaluate_set(held_out, "held_out")
+        train_result, _training_outcomes = evaluate_set(training, "training")
+        require(len(training) >= 3, "at least three matched training incidents are required")
+        require(len(held_out) >= 2, "at least two matched held-out incidents are required")
 
         # Bootstrap 95% CI for held-out
         if len(held_out) > 1:
@@ -139,15 +111,7 @@ def run_benchmark() -> dict:
             n = len(held_out)
             for _ in range(1000):
                 sample_idx = rng.choice(n, size=n, replace=True)
-                correct = 0
-                for i in sample_idx:
-                    inc, truth = held_out[i]
-                    try:
-                        results = score_incident(session, inc, model)
-                        if results and results[0]["service_id"] == truth.root_cause_service_id:
-                            correct += 1
-                    except Exception:
-                        pass
+                correct = sum(held_outcomes[int(index)] for index in sample_idx)
                 top1_samples.append(correct / n)
             top1_arr = np.array(top1_samples)
             ci = [

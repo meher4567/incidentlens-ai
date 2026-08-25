@@ -5,14 +5,18 @@ Measures sustained logs/sec on batch ingestion.
 Usage:
     python -m benchmarks.ingestion_throughput --events 100000 --batch-size 1000
 """
+
 import argparse
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 import numpy as np
+
+from benchmarks.contracts import require
 
 BASE_DIR = Path(__file__).resolve().parent
 RESULTS_DIR = BASE_DIR / "results"
@@ -41,7 +45,14 @@ def save_results(benchmark_name: str, metrics: dict, run_date: str) -> None:
     print(f"Results saved to {dated_dir}/")
 
 
-def run_benchmark(api_url: str, total_events: int, batch_size: int):
+def run_benchmark(
+    api_url: str,
+    total_events: int,
+    batch_size: int,
+    *,
+    api_key: str | None = None,
+    minimum_throughput: float = 250.0,
+):
     run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     print(f"Ingestion throughput benchmark: {total_events} events, batch size {batch_size}")
 
@@ -62,29 +73,34 @@ def run_benchmark(api_url: str, total_events: int, batch_size: int):
     ingested = 0
     errors = 0
     latencies = []
-    start = time.time()
+    start = time.perf_counter()
 
-    client = httpx.Client(timeout=60.0)
-    for i in range(0, total_events, batch_size):
-        batch = events[i : i + batch_size]
-        batch_start = time.time()
-        try:
-            resp = client.post(
-                f"{api_url}/api/logs/batch",
-                json={"events": batch},
-            )
-            batch_latency = time.time() - batch_start
-            latencies.append(batch_latency)
-            if resp.status_code == 201:
+    headers = {"X-API-Key": api_key} if api_key else {}
+    expected_batches = (total_events + batch_size - 1) // batch_size
+    successful_batches = 0
+    with httpx.Client(timeout=60.0, headers=headers) as client:
+        for i in range(0, total_events, batch_size):
+            batch = events[i : i + batch_size]
+            batch_start = time.perf_counter()
+            try:
+                resp = client.post(
+                    f"{api_url}/api/logs/batch",
+                    json={"events": batch},
+                )
+                resp.raise_for_status()
+                batch_latency = time.perf_counter() - batch_start
+                latencies.append(batch_latency)
                 data = resp.json()
-                ingested += data.get("ingested", 0)
-            else:
+                batch_ingested = int(data.get("ingested", 0))
+                batch_errors = len(data.get("errors", []))
+                ingested += batch_ingested
+                errors += batch_errors + max(0, len(batch) - batch_ingested - batch_errors)
+                successful_batches += 1
+            except (httpx.HTTPError, ValueError, TypeError):
                 errors += len(batch)
-        except Exception:
-            errors += len(batch)
 
-    elapsed = time.time() - start
-    rate = total_events / elapsed if elapsed > 0 else 0
+    elapsed = time.perf_counter() - start
+    rate = ingested / elapsed if elapsed > 0 else 0
 
     lat_arr = np.array(latencies) if latencies else np.zeros(1)
     metrics = {
@@ -93,6 +109,8 @@ def run_benchmark(api_url: str, total_events: int, batch_size: int):
         "batch_size": batch_size,
         "ingested": ingested,
         "errors": errors,
+        "successful_batches": successful_batches,
+        "expected_batches": expected_batches,
         "elapsed_seconds": round(elapsed, 2),
         "throughput_logs_per_sec": round(rate, 1),
         "p50_batch_latency_ms": round(float(np.percentile(lat_arr, 50)) * 1000, 1),
@@ -103,7 +121,22 @@ def run_benchmark(api_url: str, total_events: int, batch_size: int):
     for k, v in metrics.items():
         print(f"  {k}: {v}")
 
+    metrics["status"] = (
+        "passed"
+        if successful_batches == expected_batches
+        and ingested == total_events
+        and errors == 0
+        and rate >= minimum_throughput
+        else "failed"
+    )
     save_results("ingestion_throughput", metrics, run_date)
+    require(successful_batches == expected_batches, "every ingestion batch must succeed")
+    require(ingested == total_events, "every benchmark event must be ingested")
+    require(errors == 0, "the ingestion benchmark must have zero event errors")
+    require(
+        rate >= minimum_throughput,
+        f"ingestion throughput must be at least {minimum_throughput:.0f} logs/second",
+    )
     return metrics
 
 
@@ -112,8 +145,16 @@ def main():
     parser.add_argument("--events", type=int, default=100000)
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--api-url", type=str, default="http://localhost:8000")
+    parser.add_argument("--api-key", default=os.getenv("API_KEY"))
+    parser.add_argument("--minimum-throughput", type=float, default=250.0)
     args = parser.parse_args()
-    run_benchmark(args.api_url, args.events, args.batch_size)
+    run_benchmark(
+        args.api_url,
+        args.events,
+        args.batch_size,
+        api_key=args.api_key,
+        minimum_throughput=args.minimum_throughput,
+    )
 
 
 if __name__ == "__main__":

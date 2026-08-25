@@ -18,7 +18,10 @@ class IncidentSeverity(str, PyEnum):
 
 class Alert(Base):
     __tablename__ = "alerts"
-    __table_args__ = (Index("ix_alerts_service_start", "service_id", "start_window"),)
+    __table_args__ = (
+        Index("ix_alerts_service_start", "service_id", "start_window"),
+        Index("ix_alerts_created_at", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     service_id: Mapped[uuid.UUID] = mapped_column(

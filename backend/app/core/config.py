@@ -13,18 +13,25 @@ class Settings(BaseSettings):
     database_url_async: str | None = None
     redis_url: str = "redis://localhost:6379/0"
     debug: bool = False
+    api_key: str | None = None
+    ingest_rate_limit_per_minute: int = 0
+    max_request_body_bytes: int = 5_000_000
+    run_startup_migrations: bool = True
     seed: int = 42
     batch_max_size: int = 1000
     window_sizes_seconds: list[int] = [60, 300]
     baseline_window_count: int = 30
     mad_threshold_default: float = 4.0
-    mad_floor_error_rate: float = 0.001
+    mad_floor_error_rate: float = 0.01
     mad_floor_p95_latency: float = 5.0
     mad_floor_request_count: float = 1.0
     dedup_same_service_window_minutes: int = 5
     dedup_shared_trace_window_minutes: int = 2
+    dedup_max_component_minutes: int = 15
+    alert_max_duration_minutes: int = 10
     incident_proximity_minutes: int = 5
     incident_close_minutes: int = 10
+    incident_max_duration_minutes: int = 15
     watermark_grace_minutes: int = 5
     models_dir: str = "models"
 
@@ -40,8 +47,15 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         if isinstance(self.cors_allowed_origins, str):
-            return self.parse_cors_allowed_origins(self.cors_allowed_origins)
+            return [
+                origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()
+            ]
         return self.cors_allowed_origins
+
+    @property
+    def cors_allow_credentials(self) -> bool:
+        """Browsers reject credentialed CORS when every origin is allowed."""
+        return "*" not in self.cors_origins
 
     @property
     def async_database_url(self) -> str:

@@ -4,6 +4,7 @@ ML metadata tables: model versions and benchmark runs.
 model_versions tracks every trained model artifact (IF per-service, RCA ranker).
 benchmark_runs stores results of benchmark executions with structured metrics.
 """
+
 import uuid
 from datetime import datetime, timezone
 

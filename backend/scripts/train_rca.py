@@ -9,11 +9,12 @@ Usage:
     python -m backend.scripts.train_rca
     python -m backend.scripts.train_rca --evaluate-only
 """
+
 import argparse
 import json
 import pickle
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from backend.app.db.session import SyncSessionLocal
 from backend.app.models.incidents import Incident, IncidentRootCauseScore
 from backend.app.models.ml_meta import ModelVersion
 from backend.app.models.truth import IncidentTruth
+from backend.app.services.evaluation import match_incidents_to_truth as _match_incidents_to_truth
 from backend.app.services.root_cause import (
     FEATURE_NAMES,
     load_model,
@@ -40,49 +42,8 @@ MODEL_PATH = Path(settings.models_dir) / "rca_ranker.pkl"
 def match_incidents_to_truth(
     session: Session,
 ) -> dict[uuid.UUID, IncidentTruth]:
-    """
-    Match detected incidents to truth by time overlap.
-    Returns dict: incident_id -> IncidentTruth (best match).
-    """
-    truth_rows = session.execute(select(IncidentTruth)).scalars().all()
-    incidents = (
-        session.execute(select(Incident).where(Incident.closed_at.isnot(None))).scalars().all()
-    )
-
-    matched: dict[uuid.UUID, IncidentTruth] = {}
-    used_truth: set[uuid.UUID] = set()
-
-    for inc in incidents:
-        if inc.start_time is None or inc.end_time is None:
-            continue
-
-        best_overlap = timedelta(0)
-        best_truth = None
-
-        for t in truth_rows:
-            if t.truth_incident_id in used_truth:
-                continue
-
-            istart = t.start_time
-            iend = t.end_time
-            if istart is None or iend is None:
-                continue
-
-            # Calculate overlap
-            overlap_start = max(inc.start_time, istart)
-            overlap_end = min(inc.end_time, iend)
-            overlap = overlap_end - overlap_start
-
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_truth = t
-
-        # Only match if at least 60 seconds overlap
-        if best_truth and best_overlap >= timedelta(seconds=60):
-            matched[inc.id] = best_truth
-            used_truth.add(best_truth.truth_incident_id)
-
-    return matched
+    """Backwards-compatible wrapper around the shared evaluation matcher."""
+    return _match_incidents_to_truth(session)
 
 
 def train_and_save_model(session: Session) -> dict:
@@ -101,7 +62,7 @@ def train_and_save_model(session: Session) -> dict:
         if inc is None:
             continue
 
-        if truth.type in ["payment_latency_spike", "auth_error_spike", "inventory_traffic_drop"]:
+        if truth.split == "training":
             training_incidents.append(inc)
         else:
             held_out_incidents.append(inc)
@@ -168,7 +129,7 @@ def evaluate_held_out(
     Returns top-1, top-3 accuracy and per-type breakdown.
     """
     matched = match_incidents_to_truth(session)
-    model_data = load_model()
+    model_data = load_model(session)
 
     if model_data is None:
         return {"error": "No trained model found. Run train first."}
@@ -180,11 +141,10 @@ def evaluate_held_out(
         model = model_data
 
     # Score all held-out incidents
-    held_out_types = {"db_timeout_cascade", "notification_silent_fail"}
     held_out_incidents = []
 
     for inc_id, truth in matched.items():
-        if truth.type in held_out_types:
+        if truth.split == "held_out":
             inc = session.execute(
                 select(Incident).where(Incident.id == inc_id)
             ).scalar_one_or_none()
@@ -197,6 +157,7 @@ def evaluate_held_out(
     # Score each incident
     top1_correct = 0
     top3_correct = 0
+    top1_outcomes: list[int] = []
     per_type: dict[str, dict[str, int]] = {}
 
     for inc, truth in held_out_incidents:
@@ -225,10 +186,12 @@ def evaluate_held_out(
         top_3 = results[:3]
         top_1 = results[:1]
 
-        if top_1 and top_1[0]["service_id"] == truth.root_cause_service_id:
+        top1_is_correct = bool(top_1 and top_1[0]["service_id"] == truth.root_cause_service_id)
+        if top1_is_correct:
             top1_correct += 1
         if any(r["service_id"] == truth.root_cause_service_id for r in top_3):
             top3_correct += 1
+        top1_outcomes.append(1 if top1_is_correct else 0)
 
         ttype = truth.type
         if ttype not in per_type:
@@ -271,12 +234,7 @@ def evaluate_held_out(
     top1_list = []
     for _ in range(1000):
         sample_idx = rng.choice(n, size=n, replace=True)
-        correct = 0
-        sampled_pairs = [held_out_incidents[i] for i in sample_idx]
-        for inc_s, truth_s in sampled_pairs:
-            results_s = score_incident(session, inc_s, model)
-            if results_s and results_s[0]["service_id"] == truth_s.root_cause_service_id:
-                correct += 1
+        correct = sum(top1_outcomes[int(index)] for index in sample_idx)
         top1_list.append(correct / n)
 
     top1_arr = np.array(top1_list)
@@ -304,10 +262,14 @@ def main():
             train_result = train_and_save_model(session)
             print(json.dumps(train_result, indent=2, default=str))
             print()
+            if train_result.get("status") != "trained":
+                raise RuntimeError(f"RCA training contract failed: {train_result}")
 
         print("=== Held-Out Evaluation ===\n")
         eval_result = evaluate_held_out(session)
         print(json.dumps(eval_result, indent=2, default=str))
+        if "error" in eval_result:
+            raise RuntimeError(f"RCA evaluation contract failed: {eval_result['error']}")
         print()
 
         if "top1_accuracy" in eval_result:

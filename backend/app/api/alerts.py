@@ -12,8 +12,8 @@ router = APIRouter()
 
 
 @router.get("", response_model=list[AlertResponse])
-async def list_alerts(
-    service_id: str | None = Query(None),
+def list_alerts(
+    service_id: uuid.UUID | None = Query(None),
     severity: str | None = Query(None),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
@@ -34,8 +34,8 @@ async def list_alerts(
 
 
 @router.get("/all", response_model=list[AlertResponse])
-async def list_all_alerts(
-    service_id: str | None = Query(None),
+def list_all_alerts(
+    service_id: uuid.UUID | None = Query(None),
     severity: str | None = Query(None),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
@@ -53,7 +53,7 @@ async def list_all_alerts(
 
 
 @router.get("/{alert_id}")
-async def get_alert(
+def get_alert(
     alert_id: uuid.UUID,
     session: Session = Depends(get_sync_session),
 ):

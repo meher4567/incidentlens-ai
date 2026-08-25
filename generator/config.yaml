@@ -2,6 +2,9 @@
 # Reproducible with seed=42 by default.
 
 seed: 42
+scenario_version: "2.0"
+base_time: "2026-01-01T00:00:00+00:00"
+duration_hours: 8
 
 services:
   - name: api-gateway
@@ -60,29 +63,39 @@ incidents:
   training:
     - type: payment_latency_spike
       root_cause: payment-service
-      count: 20
+      affected_metric: p95_latency_ms
+      count: 4
       start_offset_seconds: 3600
-      duration_seconds: 600
+      spacing_seconds: 1200
+      duration_seconds: 300
     - type: auth_error_spike
       root_cause: auth-service
-      count: 20
-      start_offset_seconds: 5400
-      duration_seconds: 600
+      affected_metric: error_rate
+      count: 4
+      start_offset_seconds: 8400
+      spacing_seconds: 1200
+      duration_seconds: 300
     - type: inventory_traffic_drop
       root_cause: inventory-service
-      count: 20
-      start_offset_seconds: 7200
-      duration_seconds: 600
+      affected_metric: request_count
+      count: 4
+      start_offset_seconds: 13200
+      spacing_seconds: 1200
+      duration_seconds: 300
   held_out:
     - type: db_timeout_cascade
       root_cause: payment-service
-      count: 20
-      start_offset_seconds: 9000
+      affected_metric: error_rate
+      count: 3
+      start_offset_seconds: 18000
+      spacing_seconds: 1200
       duration_seconds: 300
     - type: notification_silent_fail
       root_cause: notification-service
-      count: 20
-      start_offset_seconds: 10800
-      duration_seconds: 600
+      affected_metric: error_rate
+      count: 3
+      start_offset_seconds: 21600
+      spacing_seconds: 1200
+      duration_seconds: 300
 
 total_events: 100000

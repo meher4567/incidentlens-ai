@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.session import Base
@@ -34,7 +34,6 @@ class Service(Base):
 
 class ServiceDependency(Base):
     __tablename__ = "service_dependencies"
-    __table_args__ = (UniqueConstraint("upstream_id", "downstream_id", name="uq_service_dep"),)
 
     upstream_id: Mapped[uuid.UUID] = mapped_column(
         CompatUUID,

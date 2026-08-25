@@ -9,13 +9,15 @@ class LogEntry(BaseModel):
     timestamp: datetime
     service: str = Field(min_length=1, max_length=255)
     level: str = Field(pattern="^(DEBUG|INFO|WARN|ERROR|CRITICAL)$")
-    message: str
+    message: str = Field(min_length=1, max_length=4096)
     request_id: Optional[uuid.UUID] = None
     trace_id: Optional[uuid.UUID] = None
     latency_ms: Optional[int] = Field(None, ge=0)
     status_code: Optional[int] = Field(None, ge=100, le=599)
-    host: Optional[str] = None
-    region: Optional[str] = None
+    host: Optional[str] = Field(None, max_length=255)
+    region: Optional[str] = Field(None, max_length=64)
+
+    model_config = {"str_strip_whitespace": True}
 
 
 class LogBatch(BaseModel):

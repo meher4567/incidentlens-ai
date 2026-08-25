@@ -4,15 +4,21 @@ Alert generation service.
 Converts anomalies into alerts with debounce (5-min same service+type)
 and severity grading. Emits alert rows referencing underlying anomalies.
 """
+
+import uuid
+from collections import defaultdict
 from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from backend.app.core.config import get_settings
 from backend.app.models.alerts import Alert, IncidentSeverity
 from backend.app.models.anomalies import Anomaly
 
-DEBOUNCE_MINUTES = 5
+settings = get_settings()
+DEBOUNCE_MINUTES = settings.dedup_same_service_window_minutes
+MAX_ALERT_DURATION_MINUTES = settings.alert_max_duration_minutes
 
 # Anomaly type derivation from (metric, direction)
 ANOMALY_TYPE_MAP = {
@@ -21,6 +27,12 @@ ANOMALY_TYPE_MAP = {
     ("request_count", "positive"): "traffic_spike",
     ("request_count", "negative"): "traffic_drop",
 }
+
+
+def _enum_value(value: object) -> str:
+    """Return a stable string for SQLAlchemy enums and plain strings."""
+    enum_value = getattr(value, "value", value)
+    return str(enum_value)
 
 
 def _derive_anomaly_type(metric: str, score: float) -> str:
@@ -34,18 +46,26 @@ def process_new_anomalies(session: Session) -> int:
     Debounce: same service + anomaly_type within 5 minutes extends existing alert.
     Returns number of alerts created/updated.
     """
-    # Find anomalies not yet referenced by any alert
-    # Get all anomaly IDs already assigned to alerts
-    existing_alert_rows = session.execute(select(Alert.anomaly_ids)).scalars().all()
+    # Load alerts once. Besides avoiding an N+1 query, keeping new alerts in
+    # this cache makes debounce correct when the Session has autoflush=False.
+    existing_alerts = list(
+        session.execute(select(Alert).order_by(Alert.start_window.asc())).scalars().all()
+    )
     assigned_anomaly_ids: set[int] = set()
-    for ids in existing_alert_rows:
-        if ids:
-            assigned_anomaly_ids.update(ids)
+    alerts_by_key: dict[tuple[uuid.UUID, str], list[Alert]] = defaultdict(list)
+    for alert in existing_alerts:
+        if alert.anomaly_ids:
+            assigned_anomaly_ids.update(alert.anomaly_ids)
+        alerts_by_key[(alert.service_id, alert.anomaly_type)].append(alert)
 
     anomaly_stmt = select(Anomaly)
     if assigned_anomaly_ids:
         anomaly_stmt = anomaly_stmt.where(~Anomaly.id.in_(assigned_anomaly_ids))
-    anomaly_rows = session.execute(anomaly_stmt).scalars().all()
+    anomaly_rows = (
+        session.execute(anomaly_stmt.order_by(Anomaly.window_start.asc(), Anomaly.id.asc()))
+        .scalars()
+        .all()
+    )
 
     if not anomaly_rows:
         return 0
@@ -54,21 +74,22 @@ def process_new_anomalies(session: Session) -> int:
 
     for anomaly in anomaly_rows:
         anomaly_type = _derive_anomaly_type(anomaly.metric, anomaly.score)
-        debounce_cutoff = anomaly.created_at - timedelta(minutes=DEBOUNCE_MINUTES)
+        debounce_cutoff = anomaly.window_start - timedelta(minutes=DEBOUNCE_MINUTES)
+        debounce_end = anomaly.window_start + timedelta(minutes=DEBOUNCE_MINUTES)
 
-        # Find existing open alert for same service + type within debounce window
-        existing = (
-            session.execute(
-                select(Alert)
-                .where(
-                    Alert.service_id == anomaly.service_id,
-                    Alert.anomaly_type == anomaly_type,
-                    Alert.end_window >= debounce_cutoff,
-                )
-                .order_by(Alert.end_window.desc())
-            )
-            .scalars()
-            .first()
+        # Find the most recent matching alert, including alerts created earlier
+        # in this uncommitted batch.
+        key = (anomaly.service_id, anomaly_type)
+        existing = next(
+            (
+                alert
+                for alert in reversed(alerts_by_key[key])
+                if alert.end_window >= debounce_cutoff
+                and alert.start_window <= debounce_end
+                and anomaly.window_start + timedelta(seconds=anomaly.window_size_seconds)
+                <= alert.start_window + timedelta(minutes=MAX_ALERT_DURATION_MINUTES)
+            ),
+            None,
         )
 
         if existing:
@@ -79,10 +100,10 @@ def process_new_anomalies(session: Session) -> int:
             )
             # Update severity to max
             severities = ["MEDIUM", "HIGH", "CRITICAL"]
-            existing_sev_idx = severities.index(str(existing.severity).upper())
-            new_sev_idx = severities.index(str(anomaly.severity).upper())
+            existing_sev_idx = severities.index(_enum_value(existing.severity).upper())
+            new_sev_idx = severities.index(_enum_value(anomaly.severity).upper())
             if new_sev_idx > existing_sev_idx:
-                existing.severity = IncidentSeverity(str(anomaly.severity).upper())
+                existing.severity = IncidentSeverity(_enum_value(anomaly.severity).upper())
             # Append anomaly_id
             if anomaly.id not in existing.anomaly_ids:
                 existing.anomaly_ids = existing.anomaly_ids + [anomaly.id]
@@ -99,6 +120,7 @@ def process_new_anomalies(session: Session) -> int:
                 anomaly_ids=[anomaly.id],
             )
             session.add(alert)
+            alerts_by_key[key].append(alert)
 
         alerts_processed += 1
 

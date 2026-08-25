@@ -4,6 +4,7 @@ Seed script: populates services, service_dependencies, and benchmark truth data.
 Usage:
     python -m backend.scripts.seed [--truth incidents_truth.jsonl]
 """
+
 import argparse
 import json
 import sys
@@ -109,6 +110,7 @@ def seed_truth(
         return 0
 
     imported = 0
+    fallback_run_id = uuid.uuid4()
     with open(truth_path) as f:
         for line_idx, line in enumerate(f):
             line = line.strip()
@@ -124,8 +126,9 @@ def seed_truth(
             root_cause_name = entry.get("root_cause_service", "")
             root_cause_id = service_map.get(root_cause_name)
             if root_cause_id is None:
-                print(f"  Warning: service '{root_cause_name}' not found for truth {truth_id}")
-                root_cause_id = uuid.uuid4()  # placeholder
+                raise ValueError(
+                    f"Unknown root-cause service '{root_cause_name}' for truth {truth_id}"
+                )
 
             affected_names = entry.get("affected_services", [])
             affected_ids = []
@@ -134,7 +137,7 @@ def seed_truth(
                 if aid:
                     affected_ids.append(aid)
 
-            generator_run_id = uuid.uuid4()
+            generator_run_id = uuid.UUID(entry.get("generator_run_id", str(fallback_run_id)))
 
             existing = session.execute(
                 select(IncidentTruth).where(IncidentTruth.truth_incident_id == truth_id)
@@ -147,11 +150,15 @@ def seed_truth(
             truth = IncidentTruth(
                 truth_incident_id=truth_id,
                 type=entry.get("type", ""),
+                split=entry.get("split", "training"),
+                affected_metric=entry.get("affected_metric", "unknown"),
                 start_time=entry["start_time"],
                 end_time=entry["end_time"],
                 root_cause_service_id=root_cause_id,
                 affected_service_ids=affected_ids,
                 generator_run_id=generator_run_id,
+                seed=int(entry.get("seed", 42)),
+                scenario_version=str(entry.get("scenario_version", "1.0")),
             )
             session.add(truth)
             imported += 1

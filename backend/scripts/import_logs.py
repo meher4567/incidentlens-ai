@@ -4,6 +4,7 @@ Import JSONL log file into the database via direct DB or HTTP API.
 Usage:
     python -m backend.scripts.import_logs --input logs.jsonl [--api-url http://localhost:8000] [--direct-db]
 """
+
 import argparse
 import json
 import time
