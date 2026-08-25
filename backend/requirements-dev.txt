@@ -6,5 +6,5 @@ pytest-asyncio==1.4.0
 pytest-cov==7.1.0
 ruff==0.16.3
 mypy==1.20.2
-types-PyYAML==6.0.12.20250516
+types-PyYAML==6.0.12.20260815
 pip-audit==2.9.0
