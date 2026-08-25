@@ -1,7 +1,7 @@
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
 sqlalchemy[asyncio]==2.0.52
-psycopg2-binary==2.9.10
+psycopg2-binary==2.9.12
 alembic==1.19.1
 pydantic==2.13.4
 pydantic-settings==2.15.0
@@ -10,8 +10,8 @@ redis==6.4.0
 pandas==2.3.3
 scikit-learn==1.9.0
 networkx==3.6.1
-numpy==2.3.3
+numpy==2.4.6
 python-multipart==0.0.32
 pyyaml==6.0.3
 asyncpg==0.31.0
-prometheus-client==0.23.1
+prometheus-client==0.26.0
