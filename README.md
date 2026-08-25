@@ -10,9 +10,6 @@ event-time metrics, detects anomalies, suppresses duplicate alerts, reconstructs
 cross-service cascades, and ranks likely root causes with inspectable feature
 contributions.
 
-This is a working distributed system with a deterministic evaluation protocol,
-not a dashboard wrapped around static predictions.
-
 ![IncidentLens dashboard overview](docs/assets/dashboard-overview.png)
 
 ## Verified results
@@ -36,11 +33,11 @@ claims. The held-out RCA set is deliberately small and reports a wide 95%
 interval; see [benchmark methodology](docs/benchmark_results.md) for the
 protocol and limitations.
 
-## Why the system is interesting
+## Engineering decisions
 
 - **Event-time correctness:** deterministic eight-hour traffic, watermark-based
   closed windows, rolling median/MAD baselines, and no wall-clock leakage.
-- **Honest ML lifecycle:** 12 labeled training incidents and 6 distinct
+- **Train/evaluation separation:** 12 labeled training incidents and 6 distinct
   held-out incidents; model artifacts are only loaded with matching registry
   metadata.
 - **Noise reduction before RCA:** debounce plus deterministic graph/trace-aware
@@ -49,11 +46,11 @@ protocol and limitations.
   scores, feature vectors, and per-feature contributions.
 - **Operational workflow:** incident briefings include impact, evidence,
   recommended actions, timeline, and a copyable Markdown handoff.
-- **Production boundaries:** API-key protection for mutations, request limits,
+- **Runtime controls:** API-key protection for mutations, request limits,
   Redis-backed ingestion throttling, request IDs, security headers, Prometheus
   metrics, readiness probes, non-root backend containers, and private data
   services.
-- **Fail-closed delivery:** branch coverage ≥80%, Python 3.11/3.13 matrix,
+- **Automated verification:** branch coverage ≥80%, Python 3.11/3.13 matrix,
   migration drift detection, dependency audits, CodeQL, container builds, and
   the real 40k-event quality gate in CI.
 
@@ -92,7 +89,7 @@ schema ownership, and failure behavior.
 
 ## Try it
 
-### Frontend-only product tour
+### Frontend demo
 
 ```bash
 cd frontend
@@ -100,8 +97,8 @@ npm ci
 VITE_DEMO_MODE=true npm run dev
 ```
 
-Demo mode is visibly labeled and uses deterministic sample data. It is for
-product review only and is never used as backend benchmark evidence.
+Demo mode is visibly labeled and uses deterministic sample data. It is only a
+UI preview and is never used as backend benchmark evidence.
 
 ### Full end-to-end pipeline
 
@@ -120,7 +117,7 @@ Open `http://localhost:5173`. The command starts infrastructure, migrates the
 schema, generates 100k events, runs aggregation/detection/dedup/clustering,
 trains both model families, and scores incidents.
 
-### Production-shaped Compose stack
+### Containerized stack
 
 ```bash
 export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
@@ -155,7 +152,7 @@ python -m benchmarks.quality_gate
 ```
 
 The ML gate expects a seeded and processed deterministic dataset. The exact
-clean-room sequence used by CI is in
+sequence used by CI is in
 [the workflow](.github/workflows/ci.yml).
 
 ## Repository map
@@ -180,13 +177,13 @@ clean-room sequence used by CI is in
 - [RCA methodology](docs/ablation_findings.md)
 - [Deployment runbook](docs/deployment.md)
 - [UX and accessibility audit](docs/ux_audit.md)
-- [Contributing](CONTRIBUTING.md) and [security policy](SECURITY.md)
+- [Security and deployment boundary](SECURITY.md)
 
 ## Scope
 
 IncidentLens uses synthetic telemetry so ground truth is exact and evaluation is
 reproducible. It does not claim that six held-out incidents represent every
-production failure mode. The next research step is replaying anonymized public
-traces or a larger topology while preserving the same train/held-out boundary.
+production failure mode. Evaluation on a larger topology or anonymized public
+traces would be required before making broader accuracy claims.
 
 Licensed under the [MIT License](LICENSE).

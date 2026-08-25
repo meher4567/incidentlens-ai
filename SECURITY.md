@@ -2,9 +2,7 @@
 
 ## Supported version
 
-Security fixes are applied to the latest commit on the default branch. This is
-a portfolio/reference system, not a hosted service with a long-term support
-matrix.
+Security fixes are applied to the latest commit on the default branch.
 
 ## Reporting a vulnerability
 
@@ -12,10 +10,6 @@ Do not open a public issue for a suspected vulnerability. Use GitHub's private
 vulnerability reporting for this repository. Include the affected component,
 reproduction steps, impact, and any suggested mitigation. Avoid including real
 credentials or sensitive telemetry.
-
-You should receive acknowledgement within seven days. Valid reports will be
-triaged, fixed on a private branch, and disclosed after a patched version is
-available.
 
 ## Current security boundary
 
